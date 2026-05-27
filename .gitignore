@@ -1,0 +1,29 @@
+# Environments
+.env
+.env.*
+.venv/
+env/
+venv/
+ENV/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+
+# Testing and coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Temporary/Scratch files
+scratch/

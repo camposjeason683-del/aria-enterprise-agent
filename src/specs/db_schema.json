@@ -1,0 +1,49 @@
+{
+  "wc_orders_cache": {
+    "columns": ["id", "order_id", "customer_name", "total", "status", "date_created", "line_items"],
+    "required_filters": {
+      "status": {
+        "operator": "NOT IN",
+        "values": ["cancelled", "failed", "trash", "draft"]
+      }
+    },
+    "alias_mappings": {
+      "customer_id": "customer_name",
+      "created_at": "date_created",
+      "transaction_date": "date_created"
+    }
+  },
+  "supplier_catalog": {
+    "columns": ["id", "product_id", "nombre_original", "proveedor", "marca", "submarca"],
+    "required_filters": {},
+    "alias_mappings": {
+      "name": "nombre_original",
+      "product_name": "nombre_original",
+      "supplier": "proveedor",
+      "brand": "marca"
+    }
+  },
+  "daily_inventory_ledger": {
+    "columns": ["id", "date", "product_id", "product_name", "stock_end_of_day", "sales_velocity", "production_detected"],
+    "required_filters": {},
+    "alias_mappings": {
+      "name": "product_name",
+      "stock": "stock_end_of_day",
+      "velocity": "sales_velocity"
+    }
+  },
+  "aria_proposals": {
+    "columns": [
+      "id", "title", "problem", "proposed_action", "urgency", "status",
+      "estimated_impact", "risk", "notes", "category", "created_at",
+      "approved_at", "approved_by", "executed_at", "rejection_reason"
+    ],
+    "required_filters": {},
+    "alias_mappings": {}
+  },
+  "aria_proposals_comments": {
+    "columns": ["id", "proposal_id", "author", "content", "created_at"],
+    "required_filters": {},
+    "alias_mappings": {}
+  }
+}
