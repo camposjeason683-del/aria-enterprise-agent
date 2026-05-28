@@ -359,7 +359,67 @@ function SandboxContent() {
 
     let updated = false;
     setNodes(prev => {
-      const next = { ...prev };
+      let next = { ...prev };
+      
+      // Calculate current path before we rename
+      const currentPath: TimelineNode[] = [];
+      let currId = activeNodeId;
+      while (currId && prev[currId]) {
+        currentPath.push(prev[currId]);
+        currId = prev[currId].parentId;
+      }
+      currentPath.reverse();
+
+      let alignedActiveNodeId = activeNodeId;
+
+      // Align IDs in tree with actual CopilotKit message IDs
+      for (let i = 0; i < activeTurns.length; i++) {
+        const turn = activeTurns[i];
+        const pathNode = currentPath[i];
+
+        if (pathNode && pathNode.id !== turn.id) {
+          const oldId = pathNode.id;
+          const newId = turn.id;
+
+          if (next[oldId]) {
+            const node = next[oldId];
+            
+            // Create new entry
+            next[newId] = {
+              ...node,
+              id: newId
+            };
+            
+            // Delete old entry
+            delete next[oldId];
+
+            // Update parentId and mergeParentId of any children in next
+            Object.keys(next).forEach(key => {
+              if (next[key].parentId === oldId) {
+                next[key] = { ...next[key], parentId: newId };
+              }
+              if (next[key].mergeParentId === oldId) {
+                next[key] = { ...next[key], mergeParentId: newId };
+              }
+            });
+
+            // Update alignedActiveNodeId if it matched
+            if (alignedActiveNodeId === oldId) {
+              alignedActiveNodeId = newId;
+            }
+
+            // Update our local currentPath array
+            pathNode.id = newId;
+            updated = true;
+          }
+        }
+      }
+
+      if (alignedActiveNodeId !== activeNodeId) {
+        setTimeout(() => setActiveNodeId(alignedActiveNodeId), 0);
+      }
+
+      // Sync turn values
       for (const turn of activeTurns) {
         const existing = next[turn.id];
         if (existing) {
@@ -376,7 +436,7 @@ function SandboxContent() {
             updated = true;
           }
         } else {
-          // Create node automatically (if not already handled in handleSubmit)
+          // Create node automatically
           const turnIndex = activeTurns.findIndex(t => t.id === turn.id);
           const prevTurn = turnIndex > 0 ? activeTurns[turnIndex - 1] : null;
           const parentId = prevTurn ? prevTurn.id : null;
@@ -398,18 +458,18 @@ function SandboxContent() {
         }
       }
 
-      // Auto-advance activeNodeId if we are at the parent of the latest turn
-      const latestTurn = activeTurns[activeTurns.length - 1];
-      if (latestTurn && activeNodeId !== latestTurn.id) {
-        const turnIndex = activeTurns.findIndex(t => t.id === latestTurn.id);
-        const prevTurn = turnIndex > 0 ? activeTurns[turnIndex - 1] : null;
-        if (prevTurn && prevTurn.id === activeNodeId) {
-          setTimeout(() => setActiveNodeId(latestTurn.id), 0);
-        }
-      }
-
       return updated ? next : prev;
     });
+
+    // Auto-advance activeNodeId if we are at the parent of the latest turn
+    const latestTurn = activeTurns[activeTurns.length - 1];
+    if (latestTurn && activeNodeId !== latestTurn.id) {
+      const turnIndex = activeTurns.findIndex(t => t.id === latestTurn.id);
+      const prevTurn = turnIndex > 0 ? activeTurns[turnIndex - 1] : null;
+      if (prevTurn && prevTurn.id === activeNodeId) {
+        setTimeout(() => setActiveNodeId(latestTurn.id), 0);
+      }
+    }
 
   }, [messages, activeNodeId]);
 
@@ -504,77 +564,6 @@ function SandboxContent() {
     if (branchNodes.length === 0) return;
     const tipNode = branchNodes.reduce((max, n) => n.depth > max.depth ? n : max, branchNodes[0]);
     handleCheckoutNode(tipNode.id);
-  };
-
-  const handleMergeBranch = (sourceBranchId: string) => {
-    if (!activeNodeId || !activeNode) return;
-    const sourceNodes = Object.values(nodes).filter(n => n.branchId === sourceBranchId);
-    if (sourceNodes.length === 0) return;
-    const sourceTip = sourceNodes.reduce((max, n) => n.depth > max.depth ? n : max, sourceNodes[0]);
-
-    const mergeNodeId = 'merge-' + Date.now();
-    const activeBranch = branches.find(b => b.id === activeNode.branchId)!;
-    const sourceBranch = branches.find(b => b.id === sourceBranchId)!;
-
-    const mergedCards = deepClone(activeNode.activeCards);
-
-    // Merge logic
-    Object.values(sourceTip.activeCards).forEach(card => {
-      const activeCard = mergedCards[card.id];
-      if (!activeCard) {
-        mergedCards[card.id] = {
-          ...deepClone(card),
-          updatedInTurn: mergeNodeId,
-          changeSummary: `Fusión desde rama "${sourceBranch.name}"`
-        };
-      } else {
-        const activeUpdateNode = nodes[activeCard.updatedInTurn];
-        const sourceUpdateNode = nodes[card.updatedInTurn];
-        const activeDepth = activeUpdateNode ? activeUpdateNode.depth : 0;
-        const sourceDepth = sourceUpdateNode ? sourceUpdateNode.depth : 0;
-
-        if (sourceDepth > activeDepth) {
-          mergedCards[card.id] = {
-            ...deepClone(card),
-            position: activeCard.position, // Keep local position
-            updatedInTurn: mergeNodeId,
-            changeSummary: `Fusión y actualización de datos desde rama "${sourceBranch.name}"`
-          };
-        }
-      }
-    });
-
-    const newMergeNode: TimelineNode = {
-      id: mergeNodeId,
-      parentId: activeNodeId,
-      mergeParentId: sourceTip.id,
-      branchId: activeNode.branchId,
-      depth: activeNode.depth + 1,
-      userMessage: {
-        id: mergeNodeId,
-        role: 'user',
-        content: `Fusión: Incorporar cambios de rama "${sourceBranch.name}" en "${activeBranch.name}"`
-      },
-      assistantMessages: [
-        {
-          id: 'asst-' + mergeNodeId,
-          role: 'assistant',
-          content: `Ramas fusionadas exitosamente. Se integraron los componentes y modificaciones de la rama "${sourceBranch.name}".`
-        }
-      ],
-      activeCards: mergedCards
-    };
-
-    setNodes(prev => ({
-      ...prev,
-      [mergeNodeId]: newMergeNode
-    }));
-    setActiveNodeId(mergeNodeId);
-
-    const path = getActivePath(mergeNodeId, { ...nodes, [mergeNodeId]: newMergeNode });
-    const msgs = compileMessagesForPath(path);
-    isSwitchingBranch.current = true;
-    setMessages(makeSerializable(msgs));
   };
 
   const recalculateDepths = (nodesRecord: Record<string, TimelineNode>): Record<string, TimelineNode> => {
@@ -1029,17 +1018,6 @@ function SandboxContent() {
                           >
                             <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: branch.color }} />
                             <span>{branch.name}</span>
-                          </button>
-                        )}
-
-                        {/* Hover Merge Button */}
-                        {!isBranchActive && (
-                          <button
-                            onClick={() => handleMergeBranch(branch.id)}
-                            title={`Fusionar "${branch.name}" en la rama activa`}
-                            className="opacity-0 group-hover:opacity-100 transition-opacity p-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500 hover:text-white"
-                          >
-                            <GitPullRequest className="w-3.5 h-3.5" />
                           </button>
                         )}
                       </div>
