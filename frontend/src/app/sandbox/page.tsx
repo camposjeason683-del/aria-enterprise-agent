@@ -121,8 +121,8 @@ function parseCardsFromMessage(content: string, prevCards: Record<string, CardSt
           mesoData: parsed.mesoData || {},
           microData: parsed.microData || {},
           position: parsed.position || {
-            x: (index % 3) * 350 + 20,
-            y: Math.floor(index / 3) * 260 + 20,
+            x: (index % 3) * 360 + 48,
+            y: Math.floor(index / 3) * 280 + 48,
           },
           zoom: 'macro',
           updatedInTurn: turnId,
@@ -202,12 +202,12 @@ const INITIAL_NODES: Record<string, TimelineNode> = {
 // Initialize active cards mapping for sample nodes
 INITIAL_NODES['turn-1'].activeCards = parseCardsFromMessage(INITIAL_NODES['turn-1'].assistantMessages[0].content, {}, 'turn-1');
 Object.values(INITIAL_NODES['turn-1'].activeCards).forEach((card, idx) => {
-  card.position = { x: idx * 360 + 20, y: 20 };
+  card.position = { x: idx * 360 + 48, y: 48 };
 });
 
 INITIAL_NODES['turn-2'].activeCards = parseCardsFromMessage(INITIAL_NODES['turn-2'].assistantMessages[0].content, INITIAL_NODES['turn-1'].activeCards, 'turn-2');
 if (INITIAL_NODES['turn-2'].activeCards['card-saif']) {
-  INITIAL_NODES['turn-2'].activeCards['card-saif'].position = { x: 740, y: 20 };
+  INITIAL_NODES['turn-2'].activeCards['card-saif'].position = { x: 740, y: 48 };
 }
 
 const INITIAL_BRANCHES: TimelineBranch[] = [
@@ -262,6 +262,8 @@ function SandboxContent() {
   const [inputValue, setInputValue] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLDivElement>(null);
+  const dragAreaRef = useRef<HTMLDivElement>(null);
 
   // States
   const [nodes, setNodes] = useState<Record<string, TimelineNode>>({});
@@ -918,7 +920,7 @@ function SandboxContent() {
 
   const handleDragEnd = (cardId: string, event: any, info: any) => {
     if (!activeNodeId) return;
-    const container = containerRef.current;
+    const container = canvasRef.current;
     if (!container) return;
 
     const containerWidth = container.clientWidth;
@@ -942,11 +944,11 @@ function SandboxContent() {
       let newX = card.position.x + info.offset.x;
       let newY = card.position.y + info.offset.y;
 
-      const margin = 16;
+      const margin = 48;
       const minX = margin;
       const minY = margin;
       const maxX = Math.max(minX, containerWidth - cardWidth - margin);
-      const maxY = Math.max(minY, containerHeight - cardHeight - margin);
+      const maxY = Math.max(minY, containerHeight - cardHeight - 128); // 128px bottom margin to avoid overlapping input bar
 
       newX = Math.max(minX, Math.min(maxX, newX));
       newY = Math.max(minY, Math.min(maxY, newY));
@@ -972,7 +974,7 @@ function SandboxContent() {
 
   const handleToggleZoom = (cardId: string) => {
     if (!activeNodeId) return;
-    const container = containerRef.current;
+    const container = canvasRef.current;
 
     setNodes(prev => {
       const node = prev[activeNodeId];
@@ -998,11 +1000,11 @@ function SandboxContent() {
           nextHeight = 480;
         }
 
-        const margin = 16;
+        const margin = 48;
         const minX = margin;
         const minY = margin;
         const maxX = Math.max(minX, containerWidth - nextWidth - margin);
-        const maxY = Math.max(minY, containerHeight - nextHeight - margin);
+        const maxY = Math.max(minY, containerHeight - nextHeight - 128); // 128px bottom margin to avoid overlapping input bar
 
         newX = Math.max(minX, Math.min(maxX, newX));
         newY = Math.max(minY, Math.min(maxY, newY));
@@ -1414,7 +1416,7 @@ function SandboxContent() {
       </div>
 
       {/* -- MAIN CANVAS (GRID OF DRAGGABLE CARDS) -- */}
-      <div className="flex-1 p-8 relative overflow-hidden" ref={containerRef}>
+      <div className="flex-1 p-8 relative overflow-hidden">
         {/* Background grid helper visible only when dragging */}
         <div
           className={`absolute inset-0 transition-opacity duration-300 pointer-events-none ${
@@ -1430,7 +1432,10 @@ function SandboxContent() {
         />
 
         <LayoutGroup>
-          <div className="w-full h-full relative min-h-[500px]">
+          <div className="w-full h-full relative min-h-[500px]" ref={canvasRef}>
+            {/* Invisibly define the drag limits inside the canvas */}
+            <div className="absolute inset-x-12 top-12 bottom-32 pointer-events-none" ref={dragAreaRef} style={{ border: '2px dashed rgba(255,255,255,0.02)' }} />
+
             {activeCardsList.length === 0 ? (
               <div className="w-full h-full flex flex-col items-center justify-center text-center opacity-40 py-20 pointer-events-none">
                 <FileText className="w-16 h-16 text-gray-500 mb-4" />
@@ -1449,8 +1454,8 @@ function SandboxContent() {
                     layoutId={`card-container-${card.id}`}
                     drag
                     dragMomentum={false}
-                    dragConstraints={containerRef}
-                    dragElastic={0}
+                    dragConstraints={dragAreaRef}
+                    dragElastic={0.05}
                     onDragStart={() => setIsDragging(true)}
                     onDragEnd={(e, info) => {
                       handleDragEnd(card.id, e, info);
