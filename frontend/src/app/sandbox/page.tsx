@@ -270,6 +270,13 @@ function SandboxContent() {
   const [renameValue, setRenameValue] = useState("");
   const [securityConfirmation, setSecurityConfirmation] = useState<SecurityConfirmation | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [isTimelineOpen, setIsTimelineOpen] = useState(true);
+  const [timelineModal, setTimelineModal] = useState<{
+    type: 'fork' | 'merge' | 'break';
+    nodeAId: string;
+    nodeBId?: string;
+    offset?: any;
+  } | null>(null);
 
   // Sync ref to prevent state loops
   const isSwitchingBranch = useRef(false);
@@ -570,6 +577,232 @@ function SandboxContent() {
     setMessages(makeSerializable(msgs));
   };
 
+  const recalculateDepths = (nodesRecord: Record<string, TimelineNode>): Record<string, TimelineNode> => {
+    const nextNodes = deepClone(nodesRecord);
+    const roots = Object.values(nextNodes).filter(n => !n.parentId || !nextNodes[n.parentId]);
+    const visited = new Set<string>();
+
+    const assignDepth = (nodeId: string, currentDepth: number) => {
+      if (visited.has(nodeId)) return;
+      visited.add(nodeId);
+
+      if (nextNodes[nodeId]) {
+        nextNodes[nodeId].depth = currentDepth;
+        const children = Object.values(nextNodes).filter(n => n.parentId === nodeId);
+        children.forEach(child => {
+          assignDepth(child.id, currentDepth + 1);
+        });
+      }
+    };
+
+    roots.forEach(root => {
+      assignDepth(root.id, 0);
+    });
+
+    return nextNodes;
+  };
+
+  const handleNodeDragEnd = (nodeId: string, event: any, info: any) => {
+    const nodeA = nodes[nodeId];
+    if (!nodeA) return;
+
+    const coordA = getNodeCoord(nodeId);
+    const endX = coordA.x + info.offset.x;
+    const endY = coordA.y + info.offset.y;
+
+    // 1. Check if dropped near another node (Merge)
+    let nearestNodeId: string | null = null;
+    let minDistance = Infinity;
+
+    Object.values(nodes).forEach(nodeB => {
+      if (nodeB.id === nodeId) return;
+      const coordB = getNodeCoord(nodeB.id);
+      const dist = Math.sqrt(Math.pow(endX - coordB.x, 2) + Math.pow(endY - coordB.y, 2));
+      if (dist < minDistance) {
+        minDistance = dist;
+        nearestNodeId = nodeB.id;
+      }
+    });
+
+    if (nearestNodeId && minDistance < 30) {
+      setTimelineModal({
+        type: 'merge',
+        nodeAId: nodeId,
+        nodeBId: nearestNodeId
+      });
+      return;
+    }
+
+    // 2. Check Y offset for Fork or Break
+    const offsetY = info.offset.y;
+
+    if (offsetY > 120) {
+      if (nodeA.parentId !== null) {
+        setTimelineModal({
+          type: 'break',
+          nodeAId: nodeId
+        });
+      }
+    } else if (Math.abs(offsetY) > 40) {
+      setTimelineModal({
+        type: 'fork',
+        nodeAId: nodeId,
+        offset: info.offset
+      });
+    }
+  };
+
+  const executeFork = (nodeId: string) => {
+    const nodeA = nodes[nodeId];
+    if (!nodeA) return;
+
+    const newBranchId = 'branch-' + Date.now();
+    const nextRow = Math.max(...branches.map(b => b.row), -1) + 1;
+    const color = colors[nextRow % colors.length];
+    
+    const shortName = nodeA.userMessage.content.slice(0, 15) + (nodeA.userMessage.content.length > 15 ? '...' : '');
+    const newBranch: TimelineBranch = {
+      id: newBranchId,
+      name: `Rama: ${shortName}`,
+      row: nextRow,
+      color
+    };
+
+    setBranches(prev => [...prev, newBranch]);
+
+    setNodes(prev => {
+      const next = { ...prev };
+      const descendants: string[] = [];
+      
+      const collectDescendants = (id: string) => {
+        Object.values(next).forEach(n => {
+          if (n.parentId === id) {
+            descendants.push(n.id);
+            collectDescendants(n.id);
+          }
+        });
+      };
+      collectDescendants(nodeId);
+
+      next[nodeId] = {
+        ...next[nodeId],
+        branchId: newBranchId
+      };
+      descendants.forEach(dId => {
+        next[dId] = {
+          ...next[dId],
+          branchId: newBranchId
+        };
+      });
+
+      return next;
+    });
+  };
+
+  const executeMerge = (nodeAId: string, nodeBId: string) => {
+    const nodeA = nodes[nodeAId];
+    const nodeB = nodes[nodeBId];
+    if (!nodeA || !nodeB) return;
+
+    const branchA = branches.find(b => b.id === nodeA.branchId);
+    const branchB = branches.find(b => b.id === nodeB.branchId);
+    const nameA = branchA ? branchA.name : 'Desconocida';
+    const nameB = branchB ? branchB.name : 'Desconocida';
+
+    const mergeNodeId = 'merge-' + Date.now();
+    const mergedCards = deepClone(nodeB.activeCards);
+
+    Object.values(nodeA.activeCards).forEach(card => {
+      const activeCard = mergedCards[card.id];
+      if (!activeCard) {
+        mergedCards[card.id] = {
+          ...deepClone(card),
+          updatedInTurn: mergeNodeId,
+          changeSummary: `Fusión desde rama "${nameA}"`
+        };
+      } else {
+        const activeUpdateNode = nodes[activeCard.updatedInTurn];
+        const sourceUpdateNode = nodes[card.updatedInTurn];
+        const activeDepth = activeUpdateNode ? activeUpdateNode.depth : 0;
+        const sourceDepth = sourceUpdateNode ? sourceUpdateNode.depth : 0;
+
+        if (sourceDepth > activeDepth) {
+          mergedCards[card.id] = {
+            ...deepClone(card),
+            position: activeCard.position,
+            updatedInTurn: mergeNodeId,
+            changeSummary: `Fusión y actualización de datos desde rama "${nameA}"`
+          };
+        }
+      }
+    });
+
+    const newMergeNode: TimelineNode = {
+      id: mergeNodeId,
+      parentId: nodeB.id,
+      mergeParentId: nodeA.id,
+      branchId: nodeB.branchId,
+      depth: nodeB.depth + 1,
+      userMessage: {
+        id: mergeNodeId,
+        role: 'user',
+        content: `Fusión gestual: Incorporar "${nameA}" en "${nameB}"`
+      },
+      assistantMessages: [
+        {
+          id: 'asst-' + mergeNodeId,
+          role: 'assistant',
+          content: `Ramas fusionadas gestualmente. Se unió la línea temporal de "${nameA}" con "${nameB}".`
+        }
+      ],
+      activeCards: mergedCards
+    };
+
+    setNodes(prev => {
+      const next = {
+        ...prev,
+        [mergeNodeId]: newMergeNode
+      };
+      return recalculateDepths(next);
+    });
+
+    setActiveNodeId(mergeNodeId);
+
+    setTimeout(() => {
+      setNodes(currentNodes => {
+        const path = getActivePath(mergeNodeId, currentNodes);
+        const msgs = compileMessagesForPath(path);
+        isSwitchingBranch.current = true;
+        setMessages(makeSerializable(msgs));
+        return currentNodes;
+      });
+    }, 50);
+  };
+
+  const executeBreak = (nodeId: string) => {
+    const nodeA = nodes[nodeId];
+    if (!nodeA) return;
+
+    setNodes(prev => {
+      const next = { ...prev };
+      next[nodeId] = {
+        ...next[nodeId],
+        parentId: null
+      };
+      return recalculateDepths(next);
+    });
+
+    setTimeout(() => {
+      setNodes(currentNodes => {
+        const path = getActivePath(activeNodeId, currentNodes);
+        const msgs = compileMessagesForPath(path);
+        isSwitchingBranch.current = true;
+        setMessages(makeSerializable(msgs));
+        return currentNodes;
+      });
+    }, 50);
+  };
+
   const handleDragEnd = (cardId: string, event: any, info: any) => {
     if (!activeNodeId) return;
     setNodes(prev => {
@@ -724,115 +957,143 @@ function SandboxContent() {
             <GitBranch className="w-5 h-5 text-indigo-400" />
             <h2 className="text-xs font-bold text-gray-400 uppercase tracking-widest">Dimension Temporal (Historial Git)</h2>
           </div>
-          <button
-            onClick={handleReset}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/5 hover:bg-red-500/10 hover:text-red-400 border border-white/5 transition-all text-xs font-medium"
-          >
-            <RefreshCw className="w-3.5 h-3.5" /> Reiniciar Canvas
-          </button>
-        </div>
-
-        {/* Scrollable Git Graph Grid */}
-        <div className="w-full overflow-x-auto [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar-thumb]:bg-white/10 [&::-webkit-scrollbar-track]:bg-transparent pb-2">
-          <div className="relative" style={{ width: graphWidth, height: graphHeight }}>
-            {/* SVG grid dots pattern */}
-            <svg className="absolute inset-0 w-full h-full pointer-events-none">
-              <defs>
-                <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">
-                  <circle cx="2" cy="2" r="1" fill="rgba(255, 255, 255, 0.05)" />
-                </pattern>
-              </defs>
-              <rect width="100%" height="100%" fill="url(#grid)" />
-              {renderGitConnections()}
-            </svg>
-
-            {/* Left Branch Badges */}
-            {branches.map(branch => {
-              const isBranchActive = activeNode && activeNode.branchId === branch.id;
-              return (
-                <div
-                  key={branch.id}
-                  style={{ left: 20, top: branch.row * 80 + 40 }}
-                  className="absolute transform -translate-y-1/2 flex items-center gap-2 group z-20"
-                >
-                  {renameBranchId === branch.id ? (
-                    <input
-                      type="text"
-                      value={renameValue}
-                      onChange={(e) => setRenameValue(e.target.value)}
-                      onBlur={saveRenameBranch}
-                      onKeyDown={(e) => e.key === 'Enter' && saveRenameBranch()}
-                      autoFocus
-                      className="bg-[#151518] border border-white/10 px-2.5 py-1 text-xs rounded-xl focus:outline-none focus:ring-1 focus:ring-indigo-500 text-white font-medium"
-                    />
-                  ) : (
-                    <button
-                      onClick={() => handleCheckoutBranch(branch.id)}
-                      onDoubleClick={() => startRenameBranch(branch)}
-                      className={`flex items-center gap-2.5 px-3 py-1.5 rounded-xl border text-xs font-semibold backdrop-blur-md transition-all duration-300 ${
-                        isBranchActive
-                          ? "bg-[#1C1C24] shadow-[0_0_15px_rgba(99,102,241,0.15)]"
-                          : "bg-white/5 border-white/5 hover:bg-white/10 text-gray-400 hover:text-white"
-                      }`}
-                      style={{ borderColor: isBranchActive ? `${branch.color}35` : undefined }}
-                    >
-                      <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: branch.color }} />
-                      <span>{branch.name}</span>
-                    </button>
-                  )}
-
-                  {/* Hover Merge Button */}
-                  {!isBranchActive && (
-                    <button
-                      onClick={() => handleMergeBranch(branch.id)}
-                      title={`Fusionar "${branch.name}" en la rama activa`}
-                      className="opacity-0 group-hover:opacity-100 transition-opacity p-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500 hover:text-white"
-                    >
-                      <GitPullRequest className="w-3.5 h-3.5" />
-                    </button>
-                  )}
-                </div>
-              );
-            })}
-
-            {/* Git Timeline Nodes */}
-            {Object.values(nodes).map(node => {
-              const coord = getNodeCoord(node.id);
-              const isActive = activeNodeId === node.id;
-              const branch = branches.find(b => b.id === node.branchId);
-              const color = branch ? branch.color : "#6366F1";
-
-              return (
-                <div
-                  key={node.id}
-                  style={{ left: coord.x, top: coord.y }}
-                  className="absolute transform -translate-x-1/2 -translate-y-1/2 flex items-center z-10 cursor-pointer group"
-                  onClick={() => handleCheckoutNode(node.id)}
-                >
-                  {/* Commits visual node */}
-                  <div
-                    className={`w-6 h-6 rounded-full border-2 bg-[#0A0A0B] flex items-center justify-center transition-all duration-300 relative ${
-                      isActive ? "scale-125 border-white shadow-[0_0_15px_rgba(255,255,255,0.4)]" : "border-gray-500 hover:border-white"
-                    }`}
-                    style={{ borderColor: !isActive ? color : undefined }}
-                  >
-                    {isActive ? (
-                      <div className="w-2 h-2 rounded-full bg-white animate-pulse" />
-                    ) : (
-                      <div className="w-1.5 h-1.5 rounded-full opacity-0 group-hover:opacity-100 transition-opacity" style={{ backgroundColor: color }} />
-                    )}
-
-                    {/* Hint Label */}
-                    <div className="absolute top-7 left-1/2 transform -translate-x-1/2 bg-[#121216] border border-white/10 rounded-lg px-2 py-1 text-[10px] text-gray-400 font-semibold whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity shadow-xl z-30">
-                      {node.userMessage.content.slice(0, 20)}
-                      {node.userMessage.content.length > 20 && '...'}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setIsTimelineOpen(!isTimelineOpen)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/5 transition-all text-xs font-semibold text-gray-300 hover:text-white"
+            >
+              <GitBranch className="w-3.5 h-3.5" />
+              {isTimelineOpen ? "Ocultar Historial" : "Mostrar Historial"}
+            </button>
+            <button
+              onClick={handleReset}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/5 hover:bg-red-500/10 hover:text-red-400 border border-white/5 transition-all text-xs font-medium"
+            >
+              <RefreshCw className="w-3.5 h-3.5" /> Reiniciar Canvas
+            </button>
           </div>
         </div>
+
+        {/* Scrollable Git Graph Grid wrapped in collapsible container */}
+        <AnimatePresence initial={false}>
+          {isTimelineOpen && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: "auto", opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.3, ease: "easeInOut" }}
+              className="overflow-hidden w-full"
+            >
+              <div className="w-full overflow-x-auto [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar-thumb]:bg-white/10 [&::-webkit-scrollbar-track]:bg-transparent pb-2">
+                <div className="relative" style={{ width: graphWidth, height: graphHeight }}>
+                  {/* SVG grid dots pattern */}
+                  <svg className="absolute inset-0 w-full h-full pointer-events-none">
+                    <defs>
+                      <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">
+                        <circle cx="2" cy="2" r="1" fill="rgba(255, 255, 255, 0.05)" />
+                      </pattern>
+                    </defs>
+                    <rect width="100%" height="100%" fill="url(#grid)" />
+                    {renderGitConnections()}
+                  </svg>
+
+                  {/* Left Branch Badges */}
+                  {branches.map(branch => {
+                    const isBranchActive = activeNode && activeNode.branchId === branch.id;
+                    return (
+                      <div
+                        key={branch.id}
+                        style={{ left: 20, top: branch.row * 80 + 40 }}
+                        className="absolute transform -translate-y-1/2 flex items-center gap-2 group z-20"
+                      >
+                        {renameBranchId === branch.id ? (
+                          <input
+                            type="text"
+                            value={renameValue}
+                            onChange={(e) => setRenameValue(e.target.value)}
+                            onBlur={saveRenameBranch}
+                            onKeyDown={(e) => e.key === 'Enter' && saveRenameBranch()}
+                            autoFocus
+                            className="bg-[#151518] border border-white/10 px-2.5 py-1 text-xs rounded-xl focus:outline-none focus:ring-1 focus:ring-indigo-500 text-white font-medium"
+                          />
+                        ) : (
+                          <button
+                            onClick={() => handleCheckoutBranch(branch.id)}
+                            onDoubleClick={() => startRenameBranch(branch)}
+                            className={`flex items-center gap-2.5 px-3 py-1.5 rounded-xl border text-xs font-semibold backdrop-blur-md transition-all duration-300 ${
+                              isBranchActive
+                                ? "bg-[#1C1C24] shadow-[0_0_15px_rgba(99,102,241,0.15)]"
+                                : "bg-white/5 border-white/5 hover:bg-white/10 text-gray-400 hover:text-white"
+                            }`}
+                            style={{ borderColor: isBranchActive ? `${branch.color}35` : undefined }}
+                          >
+                            <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: branch.color }} />
+                            <span>{branch.name}</span>
+                          </button>
+                        )}
+
+                        {/* Hover Merge Button */}
+                        {!isBranchActive && (
+                          <button
+                            onClick={() => handleMergeBranch(branch.id)}
+                            title={`Fusionar "${branch.name}" en la rama activa`}
+                            className="opacity-0 group-hover:opacity-100 transition-opacity p-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500 hover:text-white"
+                          >
+                            <GitPullRequest className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+
+                  {/* Git Timeline Nodes */}
+                  {Object.values(nodes).map(node => {
+                    const coord = getNodeCoord(node.id);
+                    const isActive = activeNodeId === node.id;
+                    const branch = branches.find(b => b.id === node.branchId);
+                    const color = branch ? branch.color : "#6366F1";
+
+                    return (
+                      <motion.div
+                        key={node.id}
+                        drag
+                        dragMomentum={false}
+                        dragSnapToOrigin={true}
+                        onDragEnd={(e, info) => handleNodeDragEnd(node.id, e, info)}
+                        style={{ left: coord.x, top: coord.y }}
+                        className="absolute transform -translate-x-1/2 -translate-y-1/2 flex items-center z-10 cursor-pointer group"
+                      >
+                        {/* Commits visual node */}
+                        <div
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleCheckoutNode(node.id);
+                          }}
+                          className={`w-6 h-6 rounded-full border-2 bg-[#0A0A0B] flex items-center justify-center transition-all duration-300 relative ${
+                            isActive ? "scale-125 border-white shadow-[0_0_15px_rgba(255,255,255,0.4)]" : "border-gray-500 hover:border-white"
+                          }`}
+                          style={{ borderColor: !isActive ? color : undefined }}
+                        >
+                          {isActive ? (
+                            <div className="w-2 h-2 rounded-full bg-white animate-pulse" />
+                          ) : (
+                            <div className="w-1.5 h-1.5 rounded-full opacity-0 group-hover:opacity-100 transition-opacity" style={{ backgroundColor: color }} />
+                          )}
+
+                          {/* Hint Label */}
+                          <div className="absolute top-7 left-1/2 transform -translate-x-1/2 bg-[#121216] border border-white/10 rounded-lg px-2 py-1 text-[10px] text-gray-400 font-semibold whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity shadow-xl z-30">
+                            {node.userMessage.content.slice(0, 20)}
+                            {node.userMessage.content.length > 20 && '...'}
+                          </div>
+                        </div>
+                      </motion.div>
+                    );
+                  })}
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
       {/* -- MAIN CANVAS (GRID OF DRAGGABLE CARDS) -- */}
@@ -1020,6 +1281,71 @@ function SandboxContent() {
                   className="flex-1 py-3 rounded-xl bg-white/5 border border-white/5 hover:bg-white/10 text-gray-300 transition-all text-sm font-semibold"
                 >
                   Rechazar
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* -- TIMELINE GESTURE CONFIRMATION MODAL -- */}
+      <AnimatePresence>
+        {timelineModal && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-[#121216] border border-white/10 rounded-[2rem] max-w-md w-full p-6 shadow-2xl relative overflow-hidden"
+            >
+              <div className="absolute top-0 left-0 w-full h-1 bg-indigo-500" />
+              <div className="flex items-start gap-4 mb-4">
+                <div className="p-3 rounded-2xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/25">
+                  <GitBranch className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-lg text-white">Confirmar Acción de Historial</h3>
+                  <p className="text-[10px] text-gray-500 font-bold uppercase tracking-wider">Control de Flujo SAIF 2.0</p>
+                </div>
+              </div>
+              <p className="text-gray-300 text-sm leading-relaxed mb-6">
+                {timelineModal.type === 'fork' && (
+                  <span>
+                    ¿Deseas <strong>bifurcar (fork)</strong> la línea temporal a partir de esta conversación? Esto creará una rama paralela conservando la conversación y tarjetas previas.
+                  </span>
+                )}
+                {timelineModal.type === 'merge' && (
+                  <span>
+                    ¿Deseas <strong>fusionar (merge)</strong> la rama de este nodo en la rama del nodo destino? Esto combinará las tarjetas activas de ambas conversaciones.
+                  </span>
+                )}
+                {timelineModal.type === 'break' && (
+                  <span>
+                    ¿Deseas <strong>desvincular (break/detach)</strong> este nodo y su descendencia de la línea temporal? Se convertirá en una sesión independiente separada de su padre.
+                  </span>
+                )}
+              </p>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => {
+                    if (timelineModal.type === 'fork') {
+                      executeFork(timelineModal.nodeAId);
+                    } else if (timelineModal.type === 'merge') {
+                      executeMerge(timelineModal.nodeAId, timelineModal.nodeBId!);
+                    } else if (timelineModal.type === 'break') {
+                      executeBreak(timelineModal.nodeAId);
+                    }
+                    setTimelineModal(null);
+                  }}
+                  className="flex-1 py-3 rounded-xl bg-indigo-500 hover:bg-indigo-600 text-white transition-all text-sm font-semibold flex items-center justify-center gap-1.5"
+                >
+                  <Check className="w-4 h-4" /> Confirmar
+                </button>
+                <button
+                  onClick={() => setTimelineModal(null)}
+                  className="flex-1 py-3 rounded-xl bg-white/5 border border-white/5 hover:bg-white/10 text-gray-300 transition-all text-sm font-semibold"
+                >
+                  Cancelar
                 </button>
               </div>
             </motion.div>
