@@ -515,3 +515,17 @@ async def health():
         "agents": 19,
         "version": "1.0.0",
     }
+
+
+from ag_ui_adk import ADKAgent, add_adk_fastapi_endpoint
+
+# Create the ADKAgent wrapper for CopilotKit
+copilotkit_agent = ADKAgent(
+    adk_agent=root_agent,
+    app_name=APP_NAME,
+    session_service=session_service,
+)
+
+# Mount it on FastAPI
+add_adk_fastapi_endpoint(app, copilotkit_agent, path="/api/v1/copilotkit/default")
+

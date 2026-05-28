@@ -1,0 +1,60 @@
+@import "tailwindcss";
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+/* CopilotKit Theme Overrides for Dark Mode */
+:root {
+  --copilot-kit-primary-color: #6366f1; /* indigo-500 */
+  --copilot-kit-background-color: transparent;
+  --copilot-kit-secondary-background-color: rgba(255, 255, 255, 0.05);
+  --copilot-kit-separator-color: rgba(255, 255, 255, 0.1);
+  --copilot-kit-primary-text-color: #f3f4f6; /* gray-100 */
+  --copilot-kit-secondary-text-color: #9ca3af; /* gray-400 */
+  --copilot-kit-muted-text-color: #6b7280; /* gray-500 */
+  --copilot-kit-response-button-color: #6366f1;
+  --copilot-kit-response-button-background-color: rgba(99, 102, 241, 0.1);
+}
+
+/* Fix Tailwind V4 Preflight breaking CopilotKit layouts */
+.copilotKitMessage {
+  align-items: flex-start !important;
+}
+.copilotKitMessage.copilotKitUserMessage {
+  align-items: flex-end !important;
+}
+.copilotKitMessage > div {
+  max-width: 85%;
+}
+.copilotKitUserMessage > div {
+  background-color: #6366f1 !important;
+  color: white !important;
+  border-radius: 1rem 1rem 0 1rem !important;
+}
+.copilotKitAssistantMessage > div {
+  background-color: rgba(255, 255, 255, 0.05) !important;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 1rem 1rem 1rem 0 !important;
+}
