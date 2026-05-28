@@ -278,6 +278,8 @@ function SandboxContent() {
     offset?: any;
   } | null>(null);
 
+  const [activeBranchId, setActiveBranchId] = useState<string>("main");
+
   // Sync ref to prevent state loops
   const isSwitchingBranch = useRef(false);
 
@@ -288,11 +290,17 @@ function SandboxContent() {
     const savedNodes = localStorage.getItem("sandbox_nodes");
     const savedBranches = localStorage.getItem("sandbox_branches");
     const savedActive = localStorage.getItem("sandbox_active_node");
+    const savedBranch = localStorage.getItem("sandbox_active_branch");
     if (savedNodes && savedBranches && savedActive) {
       try {
         setNodes(JSON.parse(savedNodes));
         setBranches(JSON.parse(savedBranches));
         setActiveNodeId(JSON.parse(savedActive));
+        if (savedBranch) {
+          setActiveBranchId(JSON.parse(savedBranch));
+        } else {
+          setActiveBranchId("main");
+        }
       } catch (e) {
         console.error("Failed to load saved state, using fallback", e);
         loadDefaultState();
@@ -306,6 +314,7 @@ function SandboxContent() {
     setNodes(INITIAL_NODES);
     setBranches(INITIAL_BRANCHES);
     setActiveNodeId('turn-2');
+    setActiveBranchId('main');
     
     // Sync default messages to CopilotKit
     const path = getActivePath('turn-2', INITIAL_NODES);
@@ -320,8 +329,9 @@ function SandboxContent() {
       localStorage.setItem("sandbox_nodes", JSON.stringify(nodes));
       localStorage.setItem("sandbox_branches", JSON.stringify(branches));
       localStorage.setItem("sandbox_active_node", JSON.stringify(activeNodeId));
+      localStorage.setItem("sandbox_active_branch", JSON.stringify(activeBranchId));
     }
-  }, [nodes, branches, activeNodeId]);
+  }, [nodes, branches, activeNodeId, activeBranchId]);
 
   // Compute active path & values
   const activePath = useMemo(() => getActivePath(activeNodeId, nodes), [activeNodeId, nodes]);
@@ -483,25 +493,30 @@ function SandboxContent() {
     const parent = activeNode;
     const isLeaf = parent ? !Object.values(nodes).some(n => n.parentId === parent.id) : true;
     
-    let branchId = parent ? parent.branchId : 'main';
+    let branchId = activeBranchId;
     let parentId = parent ? parent.id : null;
     const nextNodeId = 'turn-' + Date.now();
 
-    // Check if we need to fork (if we are in the past/not at a leaf)
-    if (parent && !isLeaf) {
-      const nextRow = Math.max(...branches.map(b => b.row), -1) + 1;
-      const color = colors[nextRow % colors.length];
-      const newBranchId = 'branch-' + Date.now();
-      const shortName = text.slice(0, 15) + (text.length > 15 ? '...' : '');
-      const newBranch: TimelineBranch = {
-        id: newBranchId,
-        name: shortName,
-        row: nextRow,
-        color
-      };
+    // Check if we need to fork (if we are in the past/not at a leaf, and submitting on the parent's branch)
+    if (parent) {
+      if (activeBranchId === parent.branchId && !isLeaf) {
+        const nextRow = Math.max(...branches.map(b => b.row), -1) + 1;
+        const color = colors[nextRow % colors.length];
+        const newBranchId = 'branch-' + Date.now();
+        const shortName = text.slice(0, 15) + (text.length > 15 ? '...' : '');
+        const newBranch: TimelineBranch = {
+          id: newBranchId,
+          name: `Rama: ${shortName}`,
+          row: nextRow,
+          color
+        };
 
-      setBranches(prev => [...prev, newBranch]);
-      branchId = newBranchId;
+        setBranches(prev => [...prev, newBranch]);
+        branchId = newBranchId;
+        setActiveBranchId(newBranchId);
+      }
+    } else {
+      branchId = activeBranchId || 'main';
     }
 
     // Pre-create node in state
@@ -520,6 +535,7 @@ function SandboxContent() {
 
     setInputValue("");
     setActiveNodeId(nextNodeId);
+    setActiveBranchId(branchId);
 
     // Sync preceding messages before triggering sendMessage
     const tempNodes = {
@@ -557,11 +573,17 @@ function SandboxContent() {
     isSwitchingBranch.current = true;
     setMessages(makeSerializable(msgs));
     setActiveNodeId(nodeId);
+    if (nodes[nodeId]) {
+      setActiveBranchId(nodes[nodeId].branchId);
+    }
   };
 
   const handleCheckoutBranch = (branchId: string) => {
     const branchNodes = Object.values(nodes).filter(n => n.branchId === branchId);
-    if (branchNodes.length === 0) return;
+    if (branchNodes.length === 0) {
+      setActiveBranchId(branchId);
+      return;
+    }
     const tipNode = branchNodes.reduce((max, n) => n.depth > max.depth ? n : max, branchNodes[0]);
     handleCheckoutNode(tipNode.id);
   };
@@ -658,34 +680,14 @@ function SandboxContent() {
     };
 
     setBranches(prev => [...prev, newBranch]);
+    setActiveBranchId(newBranchId);
+    setActiveNodeId(nodeId);
 
-    setNodes(prev => {
-      const next = { ...prev };
-      const descendants: string[] = [];
-      
-      const collectDescendants = (id: string) => {
-        Object.values(next).forEach(n => {
-          if (n.parentId === id) {
-            descendants.push(n.id);
-            collectDescendants(n.id);
-          }
-        });
-      };
-      collectDescendants(nodeId);
-
-      next[nodeId] = {
-        ...next[nodeId],
-        branchId: newBranchId
-      };
-      descendants.forEach(dId => {
-        next[dId] = {
-          ...next[dId],
-          branchId: newBranchId
-        };
-      });
-
-      return next;
-    });
+    // Sync CopilotKit messages up to the parent node
+    const path = getActivePath(nodeId, nodes);
+    const msgs = compileMessagesForPath(path);
+    isSwitchingBranch.current = true;
+    setMessages(makeSerializable(msgs));
   };
 
   const executeMerge = (nodeAId: string, nodeBId: string) => {
@@ -988,7 +990,7 @@ function SandboxContent() {
 
                   {/* Left Branch Badges */}
                   {branches.map(branch => {
-                    const isBranchActive = activeNode && activeNode.branchId === branch.id;
+                    const isBranchActive = activeBranchId === branch.id;
                     return (
                       <div
                         key={branch.id}
