@@ -121,8 +121,8 @@ function parseCardsFromMessage(content: string, prevCards: Record<string, CardSt
           mesoData: parsed.mesoData || {},
           microData: parsed.microData || {},
           position: parsed.position || {
-            x: (index % 3) * 360 + 48,
-            y: Math.floor(index / 3) * 280 + 48,
+            x: (index % 3) * 360 + 32,
+            y: Math.floor(index / 3) * 280 + 12,
           },
           zoom: 'macro',
           updatedInTurn: turnId,
@@ -202,12 +202,12 @@ const INITIAL_NODES: Record<string, TimelineNode> = {
 // Initialize active cards mapping for sample nodes
 INITIAL_NODES['turn-1'].activeCards = parseCardsFromMessage(INITIAL_NODES['turn-1'].assistantMessages[0].content, {}, 'turn-1');
 Object.values(INITIAL_NODES['turn-1'].activeCards).forEach((card, idx) => {
-  card.position = { x: idx * 360 + 48, y: 48 };
+  card.position = { x: idx * 360 + 32, y: 12 };
 });
 
 INITIAL_NODES['turn-2'].activeCards = parseCardsFromMessage(INITIAL_NODES['turn-2'].assistantMessages[0].content, INITIAL_NODES['turn-1'].activeCards, 'turn-2');
 if (INITIAL_NODES['turn-2'].activeCards['card-saif']) {
-  INITIAL_NODES['turn-2'].activeCards['card-saif'].position = { x: 740, y: 48 };
+  INITIAL_NODES['turn-2'].activeCards['card-saif'].position = { x: 752, y: 12 };
 }
 
 const INITIAL_BRANCHES: TimelineBranch[] = [
@@ -944,11 +944,10 @@ function SandboxContent() {
       let newX = card.position.x + info.offset.x;
       let newY = card.position.y + info.offset.y;
 
-      const margin = 48;
-      const minX = margin;
-      const minY = margin;
-      const maxX = Math.max(minX, containerWidth - cardWidth - margin);
-      const maxY = Math.max(minY, containerHeight - cardHeight - 128); // 128px bottom margin to avoid overlapping input bar
+      const minX = 32;
+      const minY = 12;
+      const maxX = Math.max(minX, containerWidth - cardWidth - 32);
+      const maxY = Math.max(minY, containerHeight - cardHeight - 48); // 48px bottom margin to avoid overlapping input bar
 
       newX = Math.max(minX, Math.min(maxX, newX));
       newY = Math.max(minY, Math.min(maxY, newY));
@@ -1000,11 +999,10 @@ function SandboxContent() {
           nextHeight = 480;
         }
 
-        const margin = 48;
-        const minX = margin;
-        const minY = margin;
-        const maxX = Math.max(minX, containerWidth - nextWidth - margin);
-        const maxY = Math.max(minY, containerHeight - nextHeight - 128); // 128px bottom margin to avoid overlapping input bar
+        const minX = 32;
+        const minY = 12;
+        const maxX = Math.max(minX, containerWidth - nextWidth - 32);
+        const maxY = Math.max(minY, containerHeight - nextHeight - 48); // 48px bottom margin to avoid overlapping input bar
 
         newX = Math.max(minX, Math.min(maxX, newX));
         newY = Math.max(minY, Math.min(maxY, newY));
@@ -1229,7 +1227,7 @@ function SandboxContent() {
               animate={{ height: "auto", opacity: 1 }}
               exit={{ height: 0, opacity: 0 }}
               transition={{ duration: 0.3, ease: "easeInOut" }}
-              className="overflow-hidden w-full"
+              className="absolute left-0 right-0 top-full bg-[#0C0C0E]/95 backdrop-blur-2xl border-b border-white/5 px-6 py-4 shadow-2xl z-40 overflow-hidden"
             >
               <div className="w-full overflow-x-auto [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar-thumb]:bg-white/10 [&::-webkit-scrollbar-track]:bg-transparent pb-2">
                 <div className="relative" style={{ width: graphWidth, height: graphHeight }}>
@@ -1416,25 +1414,25 @@ function SandboxContent() {
       </div>
 
       {/* -- MAIN CANVAS (GRID OF DRAGGABLE CARDS) -- */}
-      <div className="flex-1 p-8 relative overflow-hidden">
-        {/* Background grid helper visible only when dragging */}
-        <div
-          className={`absolute inset-0 transition-opacity duration-300 pointer-events-none ${
-            isDragging ? "opacity-100" : "opacity-0"
-          }`}
-          style={{
-            backgroundImage: `
-              linear-gradient(to right, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
-              linear-gradient(to bottom, rgba(255, 255, 255, 0.03) 1px, transparent 1px)
-            `,
-            backgroundSize: "40px 40px"
-          }}
-        />
-
+      <div className="flex-1 px-8 pt-3 pb-8 relative overflow-y-auto">
         <LayoutGroup>
-          <div className="w-full h-full relative min-h-[500px]" ref={canvasRef}>
+          <div className="w-full h-full relative min-h-[636px]" ref={canvasRef}>
+            {/* Background grid helper visible only when dragging (enclosed inside the dashed box area) */}
+            <div
+              className={`absolute inset-x-8 top-3 bottom-12 rounded-[2rem] transition-opacity duration-300 pointer-events-none ${
+                isDragging ? "opacity-100" : "opacity-0"
+              }`}
+              style={{
+                backgroundImage: `
+                  linear-gradient(to right, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+                  linear-gradient(to bottom, rgba(255, 255, 255, 0.03) 1px, transparent 1px)
+                `,
+                backgroundSize: "40px 40px"
+              }}
+            />
+
             {/* Invisibly define the drag limits inside the canvas */}
-            <div className="absolute inset-x-12 top-12 bottom-32 pointer-events-none" ref={dragAreaRef} style={{ border: '2px dashed rgba(255,255,255,0.02)' }} />
+            <div className="absolute inset-x-8 top-3 bottom-12 rounded-[2rem] border border-dashed border-white/20 bg-white/[0.01] pointer-events-none transition-all" ref={dragAreaRef} />
 
             {activeCardsList.length === 0 ? (
               <div className="w-full h-full flex flex-col items-center justify-center text-center opacity-40 py-20 pointer-events-none">
