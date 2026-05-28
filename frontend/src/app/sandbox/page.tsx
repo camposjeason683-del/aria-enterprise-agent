@@ -1388,6 +1388,7 @@ function SandboxContent() {
                     drag
                     dragMomentum={false}
                     dragConstraints={containerRef}
+                    dragSnapToOrigin={true}
                     transition={{ x: { type: "tween", duration: 0 }, y: { type: "tween", duration: 0 } }}
                     onDragStart={() => setIsDragging(true)}
                     onDragEnd={(e, info) => {
