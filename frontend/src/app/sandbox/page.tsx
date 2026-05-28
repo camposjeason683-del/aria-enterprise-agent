@@ -88,6 +88,7 @@ export interface TimelineBranch {
   name: string;
   row: number;
   color: string;
+  forkParentId?: string;
 }
 
 interface SecurityConfirmation {
@@ -508,7 +509,8 @@ function SandboxContent() {
           id: newBranchId,
           name: `Rama: ${shortName}`,
           row: nextRow,
-          color
+          color,
+          forkParentId: parent.id
         };
 
         setBranches(prev => [...prev, newBranch]);
@@ -676,7 +678,8 @@ function SandboxContent() {
       id: newBranchId,
       name: `Rama: ${shortName}`,
       row: nextRow,
-      color
+      color,
+      forkParentId: nodeId
     };
 
     setBranches(prev => [...prev, newBranch]);
@@ -926,11 +929,50 @@ function SandboxContent() {
         );
       }
     });
+
+    // Connections to empty branches (ghost nodes)
+    branches.forEach(branch => {
+      const hasNodes = Object.values(nodes).some(n => n.branchId === branch.id);
+      if (!hasNodes && branch.forkParentId && nodes[branch.forkParentId]) {
+        const start = getNodeCoord(branch.forkParentId);
+        const parentNode = nodes[branch.forkParentId];
+        const end = {
+          x: (parentNode.depth + 1) * 200 + 180,
+          y: branch.row * 80 + 40
+        };
+        const color = branch.color;
+        const dx = (end.x - start.x) / 2;
+        const d = `M ${start.x} ${start.y} C ${start.x + dx} ${start.y}, ${end.x - dx} ${end.y}, ${end.x} ${end.y}`;
+
+        paths.push(
+          <path
+            key={`ghost-line-${branch.id}`}
+            d={d}
+            stroke={color}
+            strokeWidth="2.5"
+            strokeDasharray="4 4"
+            fill="none"
+            strokeLinecap="round"
+            className="opacity-40 transition-all duration-300"
+          />
+        );
+      }
+    });
+
     return paths;
   };
 
-  // SVG dimensions
-  const maxDepth = Object.values(nodes).reduce((max, n) => Math.max(max, n.depth), 0);
+  // SVG dimensions (including ghost nodes)
+  const maxDepth = Math.max(
+    Object.values(nodes).reduce((max, n) => Math.max(max, n.depth), 0),
+    ...branches.map(b => {
+      const hasNodes = Object.values(nodes).some(n => n.branchId === b.id);
+      if (!hasNodes && b.forkParentId && nodes[b.forkParentId]) {
+        return nodes[b.forkParentId].depth + 1;
+      }
+      return 0;
+    })
+  );
   const maxRow = branches.reduce((max, b) => Math.max(max, b.row), 0);
   const graphWidth = maxDepth * 200 + 400;
   const graphHeight = maxRow * 80 + 90;
@@ -1067,6 +1109,46 @@ function SandboxContent() {
                           </div>
                         </div>
                       </motion.div>
+                    );
+                  })}
+
+                  {/* Git Timeline Ghost Nodes */}
+                  {branches.map(branch => {
+                    const hasNodes = Object.values(nodes).some(n => n.branchId === branch.id);
+                    if (hasNodes || !branch.forkParentId || !nodes[branch.forkParentId]) return null;
+                    
+                    const parentNode = nodes[branch.forkParentId];
+                    const x = (parentNode.depth + 1) * 200 + 180;
+                    const y = branch.row * 80 + 40;
+                    const isActive = activeBranchId === branch.id;
+                    const color = branch.color;
+
+                    return (
+                      <div
+                        key={`ghost-node-${branch.id}`}
+                        style={{ left: x, top: y }}
+                        className="absolute transform -translate-x-1/2 -translate-y-1/2 flex items-center z-10 cursor-pointer group"
+                        onClick={() => {
+                          setActiveBranchId(branch.id);
+                          if (inputRef.current) {
+                            inputRef.current.focus();
+                          }
+                        }}
+                      >
+                        <div
+                          className={`w-6 h-6 rounded-full border-2 border-dashed bg-[#0A0A0B]/80 flex items-center justify-center transition-all duration-300 relative ${
+                            isActive ? "scale-110 border-white shadow-[0_0_10px_rgba(255,255,255,0.2)] animate-pulse" : "hover:border-white opacity-60 hover:opacity-100"
+                          }`}
+                          style={{ borderColor: !isActive ? color : undefined }}
+                        >
+                          <Plus className="w-3 h-3 animate-pulse" style={{ color: isActive ? '#fff' : color }} />
+
+                          {/* Hint Label */}
+                          <div className="absolute top-7 left-1/2 transform -translate-x-1/2 bg-[#121216] border border-white/10 rounded-lg px-2 py-1 text-[10px] text-gray-400 font-semibold whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity shadow-xl z-30">
+                            Nueva conversación aquí
+                          </div>
+                        </div>
+                      </div>
                     );
                   })}
                 </div>
