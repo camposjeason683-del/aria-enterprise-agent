@@ -918,10 +918,39 @@ function SandboxContent() {
 
   const handleDragEnd = (cardId: string, event: any, info: any) => {
     if (!activeNodeId) return;
+    const container = containerRef.current;
+    if (!container) return;
+
+    const containerWidth = container.clientWidth;
+    const containerHeight = container.clientHeight;
+
     setNodes(prev => {
       const node = prev[activeNodeId];
       if (!node || !node.activeCards[cardId]) return prev;
       const card = node.activeCards[cardId];
+
+      let cardWidth = 320;
+      let cardHeight = 220;
+      if (card.zoom === 'meso') {
+        cardWidth = 450;
+        cardHeight = 340;
+      } else if (card.zoom === 'micro') {
+        cardWidth = 750;
+        cardHeight = 480;
+      }
+
+      let newX = card.position.x + info.offset.x;
+      let newY = card.position.y + info.offset.y;
+
+      const margin = 16;
+      const minX = margin;
+      const minY = margin;
+      const maxX = Math.max(minX, containerWidth - cardWidth - margin);
+      const maxY = Math.max(minY, containerHeight - cardHeight - margin);
+
+      newX = Math.max(minX, Math.min(maxX, newX));
+      newY = Math.max(minY, Math.min(maxY, newY));
+
       return {
         ...prev,
         [activeNodeId]: {
@@ -931,8 +960,8 @@ function SandboxContent() {
             [cardId]: {
               ...card,
               position: {
-                x: card.position.x + info.offset.x,
-                y: card.position.y + info.offset.y
+                x: newX,
+                y: newY
               }
             }
           }
@@ -943,12 +972,41 @@ function SandboxContent() {
 
   const handleToggleZoom = (cardId: string) => {
     if (!activeNodeId) return;
+    const container = containerRef.current;
+
     setNodes(prev => {
       const node = prev[activeNodeId];
       if (!node || !node.activeCards[cardId]) return prev;
       const card = node.activeCards[cardId];
       const nextZoom: CardState['zoom'] =
         card.zoom === 'macro' ? 'meso' : card.zoom === 'meso' ? 'micro' : 'macro';
+
+      let newX = card.position.x;
+      let newY = card.position.y;
+
+      if (container) {
+        const containerWidth = container.clientWidth;
+        const containerHeight = container.clientHeight;
+
+        let nextWidth = 320;
+        let nextHeight = 220;
+        if (nextZoom === 'meso') {
+          nextWidth = 450;
+          nextHeight = 340;
+        } else if (nextZoom === 'micro') {
+          nextWidth = 750;
+          nextHeight = 480;
+        }
+
+        const margin = 16;
+        const minX = margin;
+        const minY = margin;
+        const maxX = Math.max(minX, containerWidth - nextWidth - margin);
+        const maxY = Math.max(minY, containerHeight - nextHeight - margin);
+
+        newX = Math.max(minX, Math.min(maxX, newX));
+        newY = Math.max(minY, Math.min(maxY, newY));
+      }
 
       return {
         ...prev,
@@ -958,7 +1016,11 @@ function SandboxContent() {
             ...node.activeCards,
             [cardId]: {
               ...card,
-              zoom: nextZoom
+              zoom: nextZoom,
+              position: {
+                x: newX,
+                y: newY
+              }
             }
           }
         }
@@ -1388,6 +1450,7 @@ function SandboxContent() {
                     drag
                     dragMomentum={false}
                     dragConstraints={containerRef}
+                    dragElastic={0}
                     dragSnapToOrigin={true}
                     transition={{ x: { type: "tween", duration: 0 }, y: { type: "tween", duration: 0 } }}
                     onDragStart={() => setIsDragging(true)}
