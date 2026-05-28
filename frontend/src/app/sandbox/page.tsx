@@ -25,7 +25,8 @@ import {
   AlertTriangle,
   Lock,
   Shield,
-  FileText
+  FileText,
+  RotateCcw
 } from "lucide-react";
 
 // Deterministic short hash from any string (for stable motion animation transitions)
@@ -274,7 +275,7 @@ function SandboxContent() {
   const [isDragging, setIsDragging] = useState(false);
   const [isTimelineOpen, setIsTimelineOpen] = useState(true);
   const [timelineModal, setTimelineModal] = useState<{
-    type: 'fork' | 'merge' | 'break' | 'error';
+    type: 'fork' | 'merge' | 'break' | 'error' | 'revert';
     nodeAId: string;
     nodeBId?: string;
     offset?: any;
@@ -625,6 +626,53 @@ function SandboxContent() {
     return curr ? curr.id : nodeId;
   };
 
+  const isAncestor = (ancestorId: string, descendantId: string): boolean => {
+    const queue = [descendantId];
+    const visited = new Set<string>();
+    
+    while (queue.length > 0) {
+      const currId = queue.shift()!;
+      if (currId === ancestorId) return true;
+      if (visited.has(currId)) continue;
+      visited.add(currId);
+      
+      const node = nodes[currId];
+      if (node) {
+        if (node.parentId) {
+          if (node.parentId === ancestorId) return true;
+          queue.push(node.parentId);
+        }
+        if (node.mergeParentId) {
+          if (node.mergeParentId === ancestorId) return true;
+          queue.push(node.mergeParentId);
+        }
+      }
+    }
+    return false;
+  };
+
+  const getDescendants = (ancestorId: string, currentNodes: Record<string, TimelineNode>): string[] => {
+    const descendants: string[] = [];
+    const queue = [ancestorId];
+    const visited = new Set<string>();
+
+    while (queue.length > 0) {
+      const currId = queue.shift()!;
+      if (visited.has(currId)) continue;
+      visited.add(currId);
+
+      Object.values(currentNodes).forEach(n => {
+        if (n.parentId === currId || n.mergeParentId === currId) {
+          if (n.id !== ancestorId) {
+            descendants.push(n.id);
+            queue.push(n.id);
+          }
+        }
+      });
+    }
+    return Array.from(new Set(descendants));
+  };
+
   const handleNodeDragEnd = (nodeId: string, event: any, info: any) => {
     const nodeA = nodes[nodeId];
     if (!nodeA) return;
@@ -633,7 +681,7 @@ function SandboxContent() {
     const endX = coordA.x + info.offset.x;
     const endY = coordA.y + info.offset.y;
 
-    // 1. Check if dropped near another node (Merge)
+    // 1. Check if dropped near another node (Merge / Revert)
     let nearestNodeId: string | null = null;
     let minDistance = Infinity;
 
@@ -656,6 +704,22 @@ function SandboxContent() {
         });
         return;
       }
+
+      // Lineage check for revert: if one is ancestor of the other
+      const isAAncestorOfB = isAncestor(nodeId, nearestNodeId);
+      const isBAncestorOfA = isAncestor(nearestNodeId, nodeId);
+
+      if (isAAncestorOfB || isBAncestorOfA) {
+        const ancestorId = isAAncestorOfB ? nodeId : nearestNodeId;
+        const descendantId = isAAncestorOfB ? nearestNodeId : nodeId;
+        setTimelineModal({
+          type: 'revert',
+          nodeAId: ancestorId,
+          nodeBId: descendantId
+        });
+        return;
+      }
+
       setTimelineModal({
         type: 'merge',
         nodeAId: nodeId,
@@ -805,6 +869,45 @@ function SandboxContent() {
     setTimeout(() => {
       setNodes(currentNodes => {
         const path = getActivePath(activeNodeId, currentNodes);
+        const msgs = compileMessagesForPath(path);
+        isSwitchingBranch.current = true;
+        setMessages(makeSerializable(msgs));
+        return currentNodes;
+      });
+    }, 50);
+  };
+
+  const executeRevert = (ancestorId: string) => {
+    const ancestorNode = nodes[ancestorId];
+    if (!ancestorNode) return;
+
+    const descendants = getDescendants(ancestorId, nodes);
+
+    setNodes(prev => {
+      const next = { ...prev };
+      descendants.forEach(id => {
+        delete next[id];
+      });
+      return recalculateDepths(next);
+    });
+
+    setBranches(prev => {
+      return prev.filter(b => {
+        if (b.id === 'main') return true;
+        const branchNodes = Object.values(nodes).filter(n => n.branchId === b.id);
+        const hasRemainingNodes = branchNodes.some(n => !descendants.includes(n.id));
+        const forkParentNotDeleted = b.forkParentId ? !descendants.includes(b.forkParentId) : false;
+        return hasRemainingNodes || forkParentNotDeleted;
+      });
+    });
+
+    setActiveNodeId(ancestorId);
+    setActiveBranchId(ancestorNode.branchId);
+
+    // Sync CopilotKit messages up to the reverted node
+    setTimeout(() => {
+      setNodes(currentNodes => {
+        const path = getActivePath(ancestorId, currentNodes);
         const msgs = compileMessagesForPath(path);
         isSwitchingBranch.current = true;
         setMessages(makeSerializable(msgs));
@@ -1450,11 +1553,21 @@ function SandboxContent() {
               exit={{ scale: 0.95, opacity: 0 }}
               className="bg-[#121216] border border-white/10 rounded-[2rem] max-w-md w-full p-6 shadow-2xl relative overflow-hidden"
             >
-              <div className={`absolute top-0 left-0 w-full h-1 ${timelineModal.type === 'error' ? 'bg-red-500' : 'bg-indigo-500'}`} />
+               <div className={`absolute top-0 left-0 w-full h-1 ${
+                timelineModal.type === 'error' 
+                  ? 'bg-red-500' 
+                  : timelineModal.type === 'revert'
+                  ? 'bg-amber-500'
+                  : 'bg-indigo-500'
+              }`} />
               <div className="flex items-start gap-4 mb-4">
                 {timelineModal.type === 'error' ? (
                   <div className="p-3 rounded-2xl bg-red-500/10 text-red-400 border border-red-500/25 animate-pulse">
                     <AlertTriangle className="w-6 h-6" />
+                  </div>
+                ) : timelineModal.type === 'revert' ? (
+                  <div className="p-3 rounded-2xl bg-amber-500/10 text-amber-400 border border-amber-500/25 animate-pulse">
+                    <RotateCcw className="w-6 h-6" />
                   </div>
                 ) : (
                   <div className="p-3 rounded-2xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/25">
@@ -1463,10 +1576,18 @@ function SandboxContent() {
                 )}
                 <div>
                   <h3 className="font-bold text-lg text-white">
-                    {timelineModal.type === 'error' ? 'Acción Bloqueada' : 'Confirmar Acción de Historial'}
+                    {timelineModal.type === 'error' 
+                      ? 'Acción Bloqueada' 
+                      : timelineModal.type === 'revert'
+                      ? 'Revertir Historial'
+                      : 'Confirmar Acción de Historial'}
                   </h3>
                   <p className="text-[10px] text-gray-500 font-bold uppercase tracking-wider">
-                    {timelineModal.type === 'error' ? 'Colisión Temporal SAIF 2.0' : 'Control de Flujo SAIF 2.0'}
+                    {timelineModal.type === 'error' 
+                      ? 'Colisión Temporal SAIF 2.0' 
+                      : timelineModal.type === 'revert'
+                      ? 'Restauración Temporal SAIF 2.0'
+                      : 'Control de Flujo SAIF 2.0'}
                   </p>
                 </div>
               </div>
@@ -1487,6 +1608,11 @@ function SandboxContent() {
                 {timelineModal.type === 'break' && (
                   <span>
                     ¿Deseas <strong>desvincular (break/detach)</strong> este nodo y su descendencia de la línea temporal? Se convertirá en una sesión independiente separada de su padre.
+                  </span>
+                )}
+                {timelineModal.type === 'revert' && (
+                  <span>
+                    ¿Deseas <strong>revertir (reset)</strong> la línea temporal a este punto? Se descartarán de forma permanente todos los cambios y nodos creados posteriormente.
                   </span>
                 )}
               </p>
@@ -1510,10 +1636,16 @@ function SandboxContent() {
                         executeMerge(timelineModal.nodeAId, timelineModal.nodeBId!);
                       } else if (timelineModal.type === 'break') {
                         executeBreak(timelineModal.nodeAId);
+                      } else if (timelineModal.type === 'revert') {
+                        executeRevert(timelineModal.nodeAId);
                       }
                       setTimelineModal(null);
                     }}
-                    className="flex-1 py-3 rounded-xl bg-indigo-500 hover:bg-indigo-600 text-white transition-all text-sm font-semibold flex items-center justify-center gap-1.5"
+                    className={`flex-1 py-3 rounded-xl text-white transition-all text-sm font-semibold flex items-center justify-center gap-1.5 ${
+                      timelineModal.type === 'revert'
+                        ? 'bg-amber-500 hover:bg-amber-600 shadow-[0_0_15px_rgba(245,158,11,0.2)]'
+                        : 'bg-indigo-500 hover:bg-indigo-600'
+                    }`}
                   >
                     <Check className="w-4 h-4" /> Confirmar
                   </button>
