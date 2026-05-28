@@ -1451,15 +1451,13 @@ function SandboxContent() {
                     dragMomentum={false}
                     dragConstraints={containerRef}
                     dragElastic={0}
-                    dragSnapToOrigin={true}
-                    transition={{ x: { type: "tween", duration: 0 }, y: { type: "tween", duration: 0 } }}
                     onDragStart={() => setIsDragging(true)}
                     onDragEnd={(e, info) => {
                       handleDragEnd(card.id, e, info);
                       setIsDragging(false);
                     }}
-                    style={{ left: card.position.x, top: card.position.y }}
-                    className={`absolute rounded-[2rem] bg-[#111113]/90 border border-white/10 shadow-2xl backdrop-blur-2xl p-6 select-none overflow-hidden transition-colors ${
+                    style={{ x: card.position.x, y: card.position.y }}
+                    className={`absolute left-0 top-0 rounded-[2rem] bg-[#111113]/90 border border-white/10 shadow-2xl backdrop-blur-2xl p-6 select-none overflow-hidden transition-colors ${
                       card.zoom === 'macro' ? 'w-[320px] h-[220px]' : card.zoom === 'meso' ? 'w-[450px] h-[340px]' : 'w-[750px] h-[480px] z-30'
                     }`}
                   >
