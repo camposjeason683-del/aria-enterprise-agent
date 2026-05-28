@@ -269,6 +269,7 @@ function SandboxContent() {
   const [renameBranchId, setRenameBranchId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [securityConfirmation, setSecurityConfirmation] = useState<SecurityConfirmation | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
 
   // Sync ref to prevent state loops
   const isSwitchingBranch = useRef(false);
@@ -836,6 +837,20 @@ function SandboxContent() {
 
       {/* -- MAIN CANVAS (GRID OF DRAGGABLE CARDS) -- */}
       <div className="flex-1 p-8 relative overflow-hidden" ref={containerRef}>
+        {/* Background grid helper visible only when dragging */}
+        <div
+          className={`absolute inset-0 transition-opacity duration-300 pointer-events-none ${
+            isDragging ? "opacity-100" : "opacity-0"
+          }`}
+          style={{
+            backgroundImage: `
+              linear-gradient(to right, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+              linear-gradient(to bottom, rgba(255, 255, 255, 0.03) 1px, transparent 1px)
+            `,
+            backgroundSize: "40px 40px"
+          }}
+        />
+
         <LayoutGroup>
           <div className="w-full h-full relative min-h-[500px]">
             {activeCardsList.length === 0 ? (
@@ -858,7 +873,11 @@ function SandboxContent() {
                     drag
                     dragMomentum={false}
                     dragConstraints={containerRef}
-                    onDragEnd={(e, info) => handleDragEnd(card.id, e, info)}
+                    onDragStart={() => setIsDragging(true)}
+                    onDragEnd={(e, info) => {
+                      handleDragEnd(card.id, e, info);
+                      setIsDragging(false);
+                    }}
                     style={{ left: card.position.x, top: card.position.y }}
                     className={`absolute rounded-[2rem] bg-[#111113]/90 border border-white/10 shadow-2xl backdrop-blur-2xl p-6 select-none overflow-hidden transition-colors ${
                       card.zoom === 'macro' ? 'w-[320px] h-[220px]' : card.zoom === 'meso' ? 'w-[450px] h-[340px]' : 'w-[750px] h-[480px] z-30'
