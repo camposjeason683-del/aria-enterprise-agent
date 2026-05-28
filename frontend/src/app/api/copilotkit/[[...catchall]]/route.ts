@@ -14,7 +14,6 @@ const agents: Record<string, AbstractAgent> = {};
 agents["default"] = new HttpAgent({ url: `${AGENT_URL}/default` });
 
 const runtime = new CopilotRuntime({
-  // @ts-expect-error -- Published CopilotRuntime agents type wraps Record in MaybePromise
   agents,
 });
 

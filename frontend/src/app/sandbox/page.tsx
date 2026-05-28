@@ -1,12 +1,34 @@
 "use client";
 
+import React, { useState, useRef, useEffect, useMemo } from "react";
 import { CopilotKit, useCopilotChatInternal } from "@copilotkit/react-core";
 import { motion, AnimatePresence, LayoutGroup } from "motion/react";
-import { Zap, Target, Activity, Database, Send, Sparkles, Clock, ChevronRight } from "lucide-react";
+import {
+  Zap,
+  Target,
+  Activity,
+  Database,
+  Send,
+  Sparkles,
+  Clock,
+  ChevronRight,
+  GitBranch,
+  GitCommit,
+  GitPullRequest,
+  Trash2,
+  Plus,
+  Check,
+  X,
+  ChevronDown,
+  ChevronUp,
+  RefreshCw,
+  AlertTriangle,
+  Lock,
+  Shield,
+  FileText
+} from "lucide-react";
 
-// Deterministic short hash from any string.
-// Two strings that are equal will ALWAYS produce the same hash,
-// allowing Framer Motion to detect shared elements across turns.
+// Deterministic short hash from any string (for stable motion animation transitions)
 function contentHash(str: string): string {
   let h = 0;
   for (let i = 0; i < str.length; i++) {
@@ -14,7 +36,181 @@ function contentHash(str: string): string {
   }
   return Math.abs(h).toString(36);
 }
-import { useState, useRef, useEffect, useMemo } from "react";
+
+// Deep clone helper
+function deepClone<T>(obj: T): T {
+  return JSON.parse(JSON.stringify(obj));
+}
+
+// -- DATA MODELS --
+
+export interface CardState {
+  id: string;
+  title: string;
+  type: 'kpi' | 'saif-tracker' | 'inventory';
+  macroData: {
+    value: string;
+    change?: string;
+    trend?: 'up' | 'down' | 'neutral';
+    subtitle?: string;
+  };
+  mesoData: {
+    chartData?: { label: string; value: number }[];
+    bullets?: string[];
+    status?: string;
+  };
+  microData: {
+    tableHeaders?: string[];
+    tableRows?: string[][];
+    sqlQuery?: string;
+    executionLogs?: string[];
+    safetyScore?: number; // 0 - 100
+  };
+  position: { x: number; y: number };
+  zoom: 'macro' | 'meso' | 'micro';
+  updatedInTurn: string;
+  changeSummary: string;
+}
+
+export interface TimelineNode {
+  id: string;
+  parentId: string | null;
+  mergeParentId?: string | null;
+  userMessage: any;
+  assistantMessages: any[];
+  branchId: string;
+  depth: number;
+  activeCards: Record<string, CardState>;
+}
+
+export interface TimelineBranch {
+  id: string;
+  name: string;
+  row: number;
+  color: string;
+}
+
+interface SecurityConfirmation {
+  actionName: string;
+  riskLevel: 'low' | 'medium' | 'high';
+  onConfirm: () => void;
+}
+
+// -- PARSER FOR GENERATIVE UI --
+function parseCardsFromMessage(content: string, prevCards: Record<string, CardState>, turnId: string): Record<string, CardState> {
+  const nextCards = { ...prevCards };
+
+  // 1. Parse create_card tags
+  const createRegex = /<create_card\s+id="([^"]+)"\s+type="([^"]+)"\s*>([\s\S]*?)<\/create_card>/g;
+  let match;
+  while ((match = createRegex.exec(content)) !== null) {
+    const id = match[1];
+    const type = match[2] as any;
+    const bodyStr = match[3].trim();
+    try {
+      const parsed = JSON.parse(bodyStr);
+      if (parsed.title && parsed.macroData) {
+        const index = Object.keys(nextCards).length;
+        nextCards[id] = {
+          id,
+          title: parsed.title,
+          type,
+          macroData: parsed.macroData,
+          mesoData: parsed.mesoData || {},
+          microData: parsed.microData || {},
+          position: parsed.position || {
+            x: (index % 3) * 350 + 20,
+            y: Math.floor(index / 3) * 260 + 20,
+          },
+          zoom: 'macro',
+          updatedInTurn: turnId,
+          changeSummary: parsed.changeSummary || 'Componente creado'
+        };
+      }
+    } catch (e) {
+      console.error("Failed to parse create_card content JSON", e);
+    }
+  }
+
+  // 2. Parse update_card tags
+  const updateRegex = /<update_card\s+id="([^"]+)"\s*>([\s\S]*?)<\/update_card>/g;
+  while ((match = updateRegex.exec(content)) !== null) {
+    const id = match[1];
+    const bodyStr = match[2].trim();
+    if (nextCards[id]) {
+      try {
+        const parsed = JSON.parse(bodyStr);
+        nextCards[id] = {
+          ...nextCards[id],
+          ...parsed,
+          id, // ensure ID stays same
+          updatedInTurn: turnId,
+          changeSummary: parsed.changeSummary || 'Datos actualizados'
+        };
+      } catch (e) {
+        console.error("Failed to parse update_card content JSON", e);
+      }
+    }
+  }
+
+  // 3. Parse delete_card tags
+  const deleteRegex = /<delete_card\s+id="([^"]+)"\s*\/>/g;
+  while ((match = deleteRegex.exec(content)) !== null) {
+    const id = match[1];
+    delete nextCards[id];
+  }
+
+  return nextCards;
+}
+
+// Spaced out initial state to showcase 4D elements immediately
+const INITIAL_NODES: Record<string, TimelineNode> = {
+  'turn-1': {
+    id: 'turn-1',
+    parentId: null,
+    branchId: 'main',
+    depth: 0,
+    userMessage: { id: 'turn-1', role: 'user', content: 'Revisar KPI de ventas y alertas de stock' },
+    assistantMessages: [
+      {
+        id: 'asst-1',
+        role: 'assistant',
+        content: `He recopilado los datos solicitados del almacén central y generado las tarjetas interactivas.\n\n<create_card id="card-sales" type="kpi">\n{\n  "title": "Ventas Mensuales",\n  "macroData": { "value": "$12,450", "change": "+8.2%", "trend": "up", "subtitle": "Almacén Norte" },\n  "mesoData": {\n    "chartData": [\n      { "label": "Sem 1", "value": 2400 },\n      { "label": "Sem 2", "value": 3100 },\n      { "label": "Sem 3", "value": 2800 },\n      { "label": "Sem 4", "value": 4150 }\n    ],\n    "bullets": ["Máximo histórico en la semana de cierre", "Desglose disponible en vista micro"]\n  },\n  "microData": {\n    "tableHeaders": ["Fecha", "Cliente", "Monto", "Estado"],\n    "tableRows": [\n      ["2026-05-01", "Acme Corp", "$4,200", "Entregado"],\n      ["2026-05-08", "Stark Industries", "$3,100", "Entregado"],\n      ["2026-05-15", "Wayne Enterprises", "$1,000", "Procesando"],\n      ["2026-05-22", "Oscorp", "$4,150", "Pendiente"]\n    ],\n    "sqlQuery": "SELECT date, client, amount, status FROM sales WHERE date >= '2026-05-01'",\n    "executionLogs": [\n      "Conectando a base de datos principal de ventas...",\n      "Consulta completada en 8ms",\n      "Esquema validado contra SAIF 2.0"\n    ],\n    "safetyScore": 98\n  }\n}\n</create_card>\n\n<create_card id="card-inventory" type="inventory">\n{\n  "title": "Alertas de Inventario",\n  "macroData": { "value": "2 Alertas Críticas", "change": "Requerido", "trend": "down", "subtitle": "Stock bajo" },\n  "mesoData": {\n    "bullets": ["Placas Base V2: 1 unidad (Mínimo: 5)", "Fusores Cobre: 2 unidades (Mínimo: 10)"]\n  },\n  "microData": {\n    "tableHeaders": ["Ítem", "Ubicación", "Stock", "Límite", "Acción"],\n    "tableRows": [\n      ["Placa Base V2", "Almacén Norte", "1", "5", "Reordenar"],\n      ["Fusor Cobre", "Almacén Norte", "2", "10", "Reordenar"]\n    ],\n    "sqlQuery": "SELECT item, location, qty, limit_qty FROM stock WHERE qty < limit_qty",\n    "executionLogs": [\n      "Consultando inventario central...",\n      "Discrepancia detectada en 2 categorías"\n    ],\n    "safetyScore": 100\n  }\n}\n</create_card>`
+      }
+    ],
+    activeCards: {}
+  },
+  'turn-2': {
+    id: 'turn-2',
+    parentId: 'turn-1',
+    branchId: 'main',
+    depth: 1,
+    userMessage: { id: 'turn-2', role: 'user', content: 'Iniciar trazabilidad de seguridad de agentes' },
+    assistantMessages: [
+      {
+        id: 'asst-2',
+        role: 'assistant',
+        content: `He habilitado el monitor de políticas de seguridad activa.\n\n<create_card id="card-saif" type="saif-tracker">\n{\n  "title": "Trazabilidad SAIF 2.0",\n  "macroData": { "value": "Asegurado", "change": "100% OK", "trend": "up", "subtitle": "Políticas activas" },\n  "mesoData": {\n    "bullets": ["Sandbox: Habilitado", "Human-in-the-loop: Requerido", "Aislamiento: Verificado"]\n  },\n  "microData": {\n    "tableHeaders": ["Herramienta", "Verificación", "Privilegios", "Estado"],\n    "tableRows": [\n      ["api_connector", "Filtro inyección", "Lectura", "Verificado"],\n      ["run_command", "Sandbox aislado", "Ejecución", "Petición pendiente"]\n    ],\n    "sqlQuery": "SHOW ACTIVE SECURITY REGISTERS",\n    "executionLogs": [\n      "Cargando especificaciones saif.google...",\n      "Filtros de inyección activos",\n      "Aislamiento de memoria de sesión verificado"\n    ],\n    "safetyScore": 100\n  }\n}\n</create_card>`
+      }
+    ],
+    activeCards: {}
+  }
+};
+
+// Initialize active cards mapping for sample nodes
+INITIAL_NODES['turn-1'].activeCards = parseCardsFromMessage(INITIAL_NODES['turn-1'].assistantMessages[0].content, {}, 'turn-1');
+Object.values(INITIAL_NODES['turn-1'].activeCards).forEach((card, idx) => {
+  card.position = { x: idx * 360 + 20, y: 20 };
+});
+
+INITIAL_NODES['turn-2'].activeCards = parseCardsFromMessage(INITIAL_NODES['turn-2'].assistantMessages[0].content, INITIAL_NODES['turn-1'].activeCards, 'turn-2');
+if (INITIAL_NODES['turn-2'].activeCards['card-saif']) {
+  INITIAL_NODES['turn-2'].activeCards['card-saif'].position = { x: 740, y: 20 };
+}
+
+const INITIAL_BRANCHES: TimelineBranch[] = [
+  { id: 'main', name: 'Línea Principal', row: 0, color: '#6366F1' }
+];
 
 export default function SandboxPage() {
   return (
@@ -24,38 +220,37 @@ export default function SandboxPage() {
   );
 }
 
-// -- DATA MODELS --
-type InteractionTurn = {
-  id: string;
-  userMessage: any;
-  assistantMessages: any[];
-};
+// -- HELPER FUNCTIONS FOR TIMELINE --
 
-function deriveTurnsFromMessages(messages: any[]): InteractionTurn[] {
-  const turns: InteractionTurn[] = [];
-  let currentTurn: InteractionTurn | null = null;
+function getActivePath(activeNodeId: string | null, nodes: Record<string, TimelineNode>): TimelineNode[] {
+  if (!activeNodeId) return [];
+  const path: TimelineNode[] = [];
+  let current: TimelineNode | undefined = nodes[activeNodeId];
+  while (current) {
+    path.push(current);
+    current = current.parentId ? nodes[current.parentId] : undefined;
+  }
+  return path.reverse();
+}
 
-  for (const msg of messages) {
-    // Ignore pure system messages that aren't tied to a user prompt, unless we want to show them.
-    if (msg.role === "user") {
-      if (currentTurn) {
-        turns.push(currentTurn);
-      }
-      currentTurn = {
-        id: msg.id,
-        userMessage: msg,
-        assistantMessages: [],
-      };
-    } else if (currentTurn && msg.role !== "system") {
-      currentTurn.assistantMessages.push(msg);
-    }
+function compileMessagesForPath(path: TimelineNode[]): any[] {
+  const messages: any[] = [];
+  for (const node of path) {
+    messages.push(node.userMessage);
+    messages.push(...node.assistantMessages);
   }
-  
-  if (currentTurn) {
-    turns.push(currentTurn);
-  }
-  
-  return turns;
+  return messages;
+}
+
+function makeSerializable(messages: any[]): any[] {
+  return messages.map((m: any) => ({
+    id: m.id,
+    role: m.role,
+    content: m.content ?? "",
+    ...(m.type && { type: m.type }),
+    ...(m.name && { name: m.name }),
+    ...(m.toolCalls && { toolCalls: m.toolCalls }),
+  }));
 }
 
 // -- MAIN COMPONENT --
@@ -65,69 +260,221 @@ function SandboxContent() {
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Time Travel State
-  const turns = useMemo(() => deriveTurnsFromMessages(messages || []), [messages]);
-  const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
+  // States
+  const [nodes, setNodes] = useState<Record<string, TimelineNode>>({});
+  const [branches, setBranches] = useState<TimelineBranch[]>([]);
+  const [activeNodeId, setActiveNodeId] = useState<string | null>(null);
 
-  // If the user hasn't explicitly traveled back in time, always follow the latest turn
-  const latestTurnId = turns.length > 0 ? turns[turns.length - 1].id : null;
-  const isNavigatingHistory = activeTurnId !== null && activeTurnId !== latestTurnId;
-  const currentDisplayedTurnId = isNavigatingHistory ? activeTurnId : latestTurnId;
-  
-  const activeTurn = turns.find(t => t.id === currentDisplayedTurnId);
-  const isIdle = turns.length === 0;
+  // UI state
+  const [renameBranchId, setRenameBranchId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [securityConfirmation, setSecurityConfirmation] = useState<SecurityConfirmation | null>(null);
 
-  // Sync active turn to latest when new messages arrive (if not time traveling)
+  // Sync ref to prevent state loops
+  const isSwitchingBranch = useRef(false);
+
+  const colors = ['#6366F1', '#10B981', '#F43F5E', '#F59E0B', '#A855F7', '#06B6D4', '#EC4899'];
+
+  // Initialization & LocalStorage Load
   useEffect(() => {
-    if (!isNavigatingHistory && latestTurnId) {
-      setActiveTurnId(latestTurnId);
+    const savedNodes = localStorage.getItem("sandbox_nodes");
+    const savedBranches = localStorage.getItem("sandbox_branches");
+    const savedActive = localStorage.getItem("sandbox_active_node");
+    if (savedNodes && savedBranches && savedActive) {
+      try {
+        setNodes(JSON.parse(savedNodes));
+        setBranches(JSON.parse(savedBranches));
+        setActiveNodeId(JSON.parse(savedActive));
+      } catch (e) {
+        console.error("Failed to load saved state, using fallback", e);
+        loadDefaultState();
+      }
+    } else {
+      loadDefaultState();
     }
-  }, [latestTurnId, isNavigatingHistory]);
+  }, []);
+
+  const loadDefaultState = () => {
+    setNodes(INITIAL_NODES);
+    setBranches(INITIAL_BRANCHES);
+    setActiveNodeId('turn-2');
+    
+    // Sync default messages to CopilotKit
+    const path = getActivePath('turn-2', INITIAL_NODES);
+    const msgs = compileMessagesForPath(path);
+    isSwitchingBranch.current = true;
+    setMessages(makeSerializable(msgs));
+  };
+
+  // LocalStorage save
+  useEffect(() => {
+    if (Object.keys(nodes).length > 0) {
+      localStorage.setItem("sandbox_nodes", JSON.stringify(nodes));
+      localStorage.setItem("sandbox_branches", JSON.stringify(branches));
+      localStorage.setItem("sandbox_active_node", JSON.stringify(activeNodeId));
+    }
+  }, [nodes, branches, activeNodeId]);
+
+  // Compute active path & values
+  const activePath = useMemo(() => getActivePath(activeNodeId, nodes), [activeNodeId, nodes]);
+  const activeNode = activeNodeId ? nodes[activeNodeId] : null;
+
+  // Active cards filtered up to max 12 items
+  const activeCardsList = useMemo(() => {
+    if (!activeNode) return [];
+    return Object.values(activeNode.activeCards).slice(0, 12);
+  }, [activeNode]);
+
+  // Watch for messages change from CopilotKit to sync streaming responses
+  useEffect(() => {
+    if (!messages || messages.length === 0 || isSwitchingBranch.current) {
+      isSwitchingBranch.current = false;
+      return;
+    }
+
+    const activeTurns: any[] = [];
+    let currentTurn: any = null;
+
+    for (const msg of messages) {
+      if (msg.role === "user") {
+        if (currentTurn) activeTurns.push(currentTurn);
+        currentTurn = {
+          id: msg.id,
+          userMessage: msg,
+          assistantMessages: []
+        };
+      } else if (currentTurn && msg.role !== "system") {
+        currentTurn.assistantMessages.push(msg);
+      }
+    }
+    if (currentTurn) activeTurns.push(currentTurn);
+
+    let updated = false;
+    setNodes(prev => {
+      const next = { ...prev };
+      for (const turn of activeTurns) {
+        const existing = next[turn.id];
+        if (existing) {
+          const assMsgStr = JSON.stringify(existing.assistantMessages);
+          const turnMsgStr = JSON.stringify(turn.assistantMessages);
+          if (assMsgStr !== turnMsgStr) {
+            const rawContent = turn.assistantMessages.map((m: any) => m.content).join('');
+            const parentCards = existing.parentId ? next[existing.parentId]?.activeCards || {} : {};
+            next[turn.id] = {
+              ...existing,
+              assistantMessages: turn.assistantMessages,
+              activeCards: parseCardsFromMessage(rawContent, parentCards, turn.id)
+            };
+            updated = true;
+          }
+        } else {
+          // Create node automatically (if not already handled in handleSubmit)
+          const turnIndex = activeTurns.findIndex(t => t.id === turn.id);
+          const prevTurn = turnIndex > 0 ? activeTurns[turnIndex - 1] : null;
+          const parentId = prevTurn ? prevTurn.id : null;
+          const parentNode = parentId ? next[parentId] : null;
+          const branchId = parentNode ? parentNode.branchId : 'main';
+          const depth = parentNode ? parentNode.depth + 1 : 0;
+          const rawContent = turn.assistantMessages.map((m: any) => m.content).join('');
+
+          next[turn.id] = {
+            id: turn.id,
+            parentId,
+            userMessage: turn.userMessage,
+            assistantMessages: turn.assistantMessages,
+            branchId,
+            depth,
+            activeCards: parseCardsFromMessage(rawContent, parentNode ? parentNode.activeCards : {}, turn.id)
+          };
+          updated = true;
+        }
+      }
+
+      // Auto-advance activeNodeId if we are at the parent of the latest turn
+      const latestTurn = activeTurns[activeTurns.length - 1];
+      if (latestTurn && activeNodeId !== latestTurn.id) {
+        const turnIndex = activeTurns.findIndex(t => t.id === latestTurn.id);
+        const prevTurn = turnIndex > 0 ? activeTurns[turnIndex - 1] : null;
+        if (prevTurn && prevTurn.id === activeNodeId) {
+          setTimeout(() => setActiveNodeId(latestTurn.id), 0);
+        }
+      }
+
+      return updated ? next : prev;
+    });
+
+  }, [messages, activeNodeId]);
+
+  // -- HANDLERS --
 
   const handleSubmit = async (e?: React.FormEvent, directText?: string) => {
     e?.preventDefault();
     const text = directText || inputValue;
     if (!text.trim() || isLoading) return;
+
+    const parent = activeNode;
+    const isLeaf = parent ? !Object.values(nodes).some(n => n.parentId === parent.id) : true;
     
-    // Context Pruning: If we are time traveling and we send a new message,
-    // we must prune the alternate future from CopilotKit's memory.
-    if (isNavigatingHistory && activeTurnId) {
-      const activeTurnIndex = turns.findIndex(t => t.id === activeTurnId);
-      if (activeTurnIndex !== -1) {
-        // Find the index in raw messages of the active turn's user message
-        const targetMessage = turns[activeTurnIndex].userMessage;
-        const rawIndex = messages.findIndex(m => m.id === targetMessage.id);
-        
-        // We want to keep everything up to this turn's assistant messages
-        // Actually, the easiest way is to find the index of the next turn's user message
-        const nextTurn = turns[activeTurnIndex + 1];
-        if (nextTurn) {
-          const cutIndex = messages.findIndex(m => m.id === nextTurn.userMessage.id);
-          if (cutIndex !== -1) {
-             const prunedMessages = messages.slice(0, cutIndex);
-             // CopilotKit messages carry internal function references (e.g. legacyCustomMessageRenderer)
-             // that structuredClone cannot serialize. Strip them down to plain data objects.
-             const serializable = prunedMessages.map((m: any) => ({
-               id: m.id,
-               role: m.role,
-               content: m.content ?? "",
-               ...(m.type && { type: m.type }),
-               ...(m.name && { name: m.name }),
-               ...(m.toolCalls && { toolCalls: m.toolCalls }),
-             }));
-             setMessages(serializable as any);
-          }
-        }
-      }
+    let branchId = parent ? parent.branchId : 'main';
+    let parentId = parent ? parent.id : null;
+    const nextNodeId = 'turn-' + Date.now();
+
+    // Check if we need to fork (if we are in the past/not at a leaf)
+    if (parent && !isLeaf) {
+      const nextRow = Math.max(...branches.map(b => b.row), -1) + 1;
+      const color = colors[nextRow % colors.length];
+      const newBranchId = 'branch-' + Date.now();
+      const shortName = text.slice(0, 15) + (text.length > 15 ? '...' : '');
+      const newBranch: TimelineBranch = {
+        id: newBranchId,
+        name: shortName,
+        row: nextRow,
+        color
+      };
+
+      setBranches(prev => [...prev, newBranch]);
+      branchId = newBranchId;
     }
-    
+
+    // Pre-create node in state
+    setNodes(prev => ({
+      ...prev,
+      [nextNodeId]: {
+        id: nextNodeId,
+        parentId,
+        userMessage: { id: nextNodeId, role: "user", content: text },
+        assistantMessages: [],
+        branchId,
+        depth: parent ? parent.depth + 1 : 0,
+        activeCards: parent ? deepClone(parent.activeCards) : {}
+      }
+    }));
+
     setInputValue("");
-    // Snap to present
-    setActiveTurnId(null);
-    
+    setActiveNodeId(nextNodeId);
+
+    // Sync preceding messages before triggering sendMessage
+    const tempNodes = {
+      ...nodes,
+      [nextNodeId]: {
+        id: nextNodeId,
+        parentId,
+        userMessage: { id: nextNodeId, role: "user", content: text },
+        assistantMessages: [],
+        branchId,
+        depth: parent ? parent.depth + 1 : 0,
+        activeCards: parent ? deepClone(parent.activeCards) : {}
+      }
+    };
+    const path = getActivePath(nextNodeId, tempNodes);
+    // Remove the last turn from history before calling sendMessage, CopilotKit appends it automatically
+    const pathMsgsWithoutLast = compileMessagesForPath(path.slice(0, -1));
+    isSwitchingBranch.current = true;
+    setMessages(makeSerializable(pathMsgsWithoutLast));
+
     try {
       await sendMessage({
-        id: Date.now().toString(),
+        id: nextNodeId,
         role: "user",
         content: text,
       });
@@ -136,208 +483,766 @@ function SandboxContent() {
     }
   };
 
+  const handleCheckoutNode = (nodeId: string) => {
+    const path = getActivePath(nodeId, nodes);
+    const msgs = compileMessagesForPath(path);
+    isSwitchingBranch.current = true;
+    setMessages(makeSerializable(msgs));
+    setActiveNodeId(nodeId);
+  };
+
+  const handleCheckoutBranch = (branchId: string) => {
+    const branchNodes = Object.values(nodes).filter(n => n.branchId === branchId);
+    if (branchNodes.length === 0) return;
+    const tipNode = branchNodes.reduce((max, n) => n.depth > max.depth ? n : max, branchNodes[0]);
+    handleCheckoutNode(tipNode.id);
+  };
+
+  const handleMergeBranch = (sourceBranchId: string) => {
+    if (!activeNodeId || !activeNode) return;
+    const sourceNodes = Object.values(nodes).filter(n => n.branchId === sourceBranchId);
+    if (sourceNodes.length === 0) return;
+    const sourceTip = sourceNodes.reduce((max, n) => n.depth > max.depth ? n : max, sourceNodes[0]);
+
+    const mergeNodeId = 'merge-' + Date.now();
+    const activeBranch = branches.find(b => b.id === activeNode.branchId)!;
+    const sourceBranch = branches.find(b => b.id === sourceBranchId)!;
+
+    const mergedCards = deepClone(activeNode.activeCards);
+
+    // Merge logic
+    Object.values(sourceTip.activeCards).forEach(card => {
+      const activeCard = mergedCards[card.id];
+      if (!activeCard) {
+        mergedCards[card.id] = {
+          ...deepClone(card),
+          updatedInTurn: mergeNodeId,
+          changeSummary: `Fusión desde rama "${sourceBranch.name}"`
+        };
+      } else {
+        const activeUpdateNode = nodes[activeCard.updatedInTurn];
+        const sourceUpdateNode = nodes[card.updatedInTurn];
+        const activeDepth = activeUpdateNode ? activeUpdateNode.depth : 0;
+        const sourceDepth = sourceUpdateNode ? sourceUpdateNode.depth : 0;
+
+        if (sourceDepth > activeDepth) {
+          mergedCards[card.id] = {
+            ...deepClone(card),
+            position: activeCard.position, // Keep local position
+            updatedInTurn: mergeNodeId,
+            changeSummary: `Fusión y actualización de datos desde rama "${sourceBranch.name}"`
+          };
+        }
+      }
+    });
+
+    const newMergeNode: TimelineNode = {
+      id: mergeNodeId,
+      parentId: activeNodeId,
+      mergeParentId: sourceTip.id,
+      branchId: activeNode.branchId,
+      depth: activeNode.depth + 1,
+      userMessage: {
+        id: mergeNodeId,
+        role: 'user',
+        content: `Fusión: Incorporar cambios de rama "${sourceBranch.name}" en "${activeBranch.name}"`
+      },
+      assistantMessages: [
+        {
+          id: 'asst-' + mergeNodeId,
+          role: 'assistant',
+          content: `Ramas fusionadas exitosamente. Se integraron los componentes y modificaciones de la rama "${sourceBranch.name}".`
+        }
+      ],
+      activeCards: mergedCards
+    };
+
+    setNodes(prev => ({
+      ...prev,
+      [mergeNodeId]: newMergeNode
+    }));
+    setActiveNodeId(mergeNodeId);
+
+    const path = getActivePath(mergeNodeId, { ...nodes, [mergeNodeId]: newMergeNode });
+    const msgs = compileMessagesForPath(path);
+    isSwitchingBranch.current = true;
+    setMessages(makeSerializable(msgs));
+  };
+
+  const handleDragEnd = (cardId: string, event: any, info: any) => {
+    if (!activeNodeId) return;
+    setNodes(prev => {
+      const node = prev[activeNodeId];
+      if (!node || !node.activeCards[cardId]) return prev;
+      const card = node.activeCards[cardId];
+      return {
+        ...prev,
+        [activeNodeId]: {
+          ...node,
+          activeCards: {
+            ...node.activeCards,
+            [cardId]: {
+              ...card,
+              position: {
+                x: card.position.x + info.offset.x,
+                y: card.position.y + info.offset.y
+              }
+            }
+          }
+        }
+      };
+    });
+  };
+
+  const handleToggleZoom = (cardId: string) => {
+    if (!activeNodeId) return;
+    setNodes(prev => {
+      const node = prev[activeNodeId];
+      if (!node || !node.activeCards[cardId]) return prev;
+      const card = node.activeCards[cardId];
+      const nextZoom: CardState['zoom'] =
+        card.zoom === 'macro' ? 'meso' : card.zoom === 'meso' ? 'micro' : 'macro';
+
+      return {
+        ...prev,
+        [activeNodeId]: {
+          ...node,
+          activeCards: {
+            ...node.activeCards,
+            [cardId]: {
+              ...card,
+              zoom: nextZoom
+            }
+          }
+        }
+      };
+    });
+  };
+
+  const handleReset = () => {
+    localStorage.removeItem("sandbox_nodes");
+    localStorage.removeItem("sandbox_branches");
+    localStorage.removeItem("sandbox_active_node");
+    loadDefaultState();
+  };
+
+  const startRenameBranch = (branch: TimelineBranch) => {
+    setRenameBranchId(branch.id);
+    setRenameValue(branch.name);
+  };
+
+  const saveRenameBranch = () => {
+    if (renameBranchId && renameValue.trim()) {
+      setBranches(prev => prev.map(b => b.id === renameBranchId ? { ...b, name: renameValue } : b));
+    }
+    setRenameBranchId(null);
+  };
+
+  // Node coord calculator
+  const getNodeCoord = (nodeId: string) => {
+    const node = nodes[nodeId];
+    if (!node) return { x: 0, y: 0 };
+    const branch = branches.find(b => b.id === node.branchId);
+    const row = branch ? branch.row : 0;
+    const colWidth = 200;
+    const rowHeight = 80;
+    const paddingX = 180;
+    const paddingY = 40;
+    return {
+      x: node.depth * colWidth + paddingX,
+      y: row * rowHeight + paddingY
+    };
+  };
+
+  // SVG lines renderer
+  const renderGitConnections = () => {
+    const paths: React.ReactNode[] = [];
+    Object.values(nodes).forEach(node => {
+      if (node.parentId && nodes[node.parentId]) {
+        const start = getNodeCoord(node.parentId);
+        const end = getNodeCoord(node.id);
+        const branch = branches.find(b => b.id === node.branchId);
+        const color = branch ? branch.color : "#6366F1";
+        const dx = (end.x - start.x) / 2;
+        const d = `M ${start.x} ${start.y} C ${start.x + dx} ${start.y}, ${end.x - dx} ${end.y}, ${end.x} ${end.y}`;
+
+        paths.push(
+          <path
+            key={`line-${node.parentId}-${node.id}`}
+            d={d}
+            stroke={color}
+            strokeWidth="3"
+            fill="none"
+            strokeLinecap="round"
+            className="opacity-60 transition-all duration-300"
+          />
+        );
+      }
+
+      if (node.mergeParentId && nodes[node.mergeParentId]) {
+        const start = getNodeCoord(node.mergeParentId);
+        const end = getNodeCoord(node.id);
+        const mergedBranch = branches.find(b => b.id === nodes[node.mergeParentId!].branchId);
+        const color = mergedBranch ? mergedBranch.color : "#10B981";
+        const dx = (end.x - start.x) / 2;
+        const d = `M ${start.x} ${start.y} C ${start.x + dx} ${start.y}, ${end.x - dx} ${end.y}, ${end.x} ${end.y}`;
+
+        paths.push(
+          <path
+            key={`merge-line-${node.mergeParentId}-${node.id}`}
+            d={d}
+            stroke={color}
+            strokeWidth="3"
+            strokeDasharray="5 5"
+            fill="none"
+            strokeLinecap="round"
+            className="opacity-70 transition-all duration-300"
+          />
+        );
+      }
+    });
+    return paths;
+  };
+
+  // SVG dimensions
+  const maxDepth = Object.values(nodes).reduce((max, n) => Math.max(max, n.depth), 0);
+  const maxRow = branches.reduce((max, b) => Math.max(max, b.row), 0);
+  const graphWidth = maxDepth * 200 + 400;
+  const graphHeight = maxRow * 80 + 90;
+
   return (
     <div className="min-h-screen bg-[#0A0A0B] text-white flex flex-col font-sans relative overflow-hidden" ref={containerRef}>
-      {/* Dynamic Ambient Backgrounds */}
-      <div className="absolute top-[-20%] left-[-10%] w-[50%] h-[50%] bg-indigo-500/10 blur-[120px] rounded-full pointer-events-none" />
-      <div className="absolute bottom-[-20%] right-[-10%] w-[50%] h-[50%] bg-purple-500/10 blur-[120px] rounded-full pointer-events-none" />
+      {/* Ambient background glows */}
+      <div className="absolute top-[-25%] left-[-15%] w-[60%] h-[60%] bg-indigo-500/5 blur-[140px] rounded-full pointer-events-none" />
+      <div className="absolute bottom-[-25%] right-[-15%] w-[60%] h-[60%] bg-purple-500/5 blur-[140px] rounded-full pointer-events-none" />
 
-      <LayoutGroup>
-        
-        {/* -- HISTORY SIDEBAR / TOP NAV -- */}
-        <AnimatePresence>
-          {turns.length > 1 && (
-            <motion.div 
-              initial={{ opacity: 0, y: -20 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="absolute top-0 left-0 w-full flex items-center gap-4 z-50 pointer-events-auto px-6 py-4 overflow-x-auto overflow-y-hidden border-b border-white/5 bg-[#0A0A0B]/80 backdrop-blur-xl [&::-webkit-scrollbar]:hidden"
-            >
-              <div className="flex items-center gap-2 text-xs font-semibold text-gray-500 uppercase tracking-widest shrink-0 mr-2">
-                <Clock className="w-4 h-4" /> Memoria
+      {/* -- HEADER NAVIGATION (BRANCH TIMELINE) -- */}
+      <div className="w-full border-b border-white/5 bg-[#0C0C0E]/90 backdrop-blur-2xl flex flex-col p-4 z-40 relative">
+        <div className="flex items-center justify-between mb-2 px-2">
+          <div className="flex items-center gap-3">
+            <GitBranch className="w-5 h-5 text-indigo-400" />
+            <h2 className="text-xs font-bold text-gray-400 uppercase tracking-widest">Dimension Temporal (Historial Git)</h2>
+          </div>
+          <button
+            onClick={handleReset}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/5 hover:bg-red-500/10 hover:text-red-400 border border-white/5 transition-all text-xs font-medium"
+          >
+            <RefreshCw className="w-3.5 h-3.5" /> Reiniciar Canvas
+          </button>
+        </div>
+
+        {/* Scrollable Git Graph Grid */}
+        <div className="w-full overflow-x-auto [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar-thumb]:bg-white/10 [&::-webkit-scrollbar-track]:bg-transparent pb-2">
+          <div className="relative" style={{ width: graphWidth, height: graphHeight }}>
+            {/* SVG grid dots pattern */}
+            <svg className="absolute inset-0 w-full h-full pointer-events-none">
+              <defs>
+                <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">
+                  <circle cx="2" cy="2" r="1" fill="rgba(255, 255, 255, 0.05)" />
+                </pattern>
+              </defs>
+              <rect width="100%" height="100%" fill="url(#grid)" />
+              {renderGitConnections()}
+            </svg>
+
+            {/* Left Branch Badges */}
+            {branches.map(branch => {
+              const isBranchActive = activeNode && activeNode.branchId === branch.id;
+              return (
+                <div
+                  key={branch.id}
+                  style={{ left: 20, top: branch.row * 80 + 40 }}
+                  className="absolute transform -translate-y-1/2 flex items-center gap-2 group z-20"
+                >
+                  {renameBranchId === branch.id ? (
+                    <input
+                      type="text"
+                      value={renameValue}
+                      onChange={(e) => setRenameValue(e.target.value)}
+                      onBlur={saveRenameBranch}
+                      onKeyDown={(e) => e.key === 'Enter' && saveRenameBranch()}
+                      autoFocus
+                      className="bg-[#151518] border border-white/10 px-2.5 py-1 text-xs rounded-xl focus:outline-none focus:ring-1 focus:ring-indigo-500 text-white font-medium"
+                    />
+                  ) : (
+                    <button
+                      onClick={() => handleCheckoutBranch(branch.id)}
+                      onDoubleClick={() => startRenameBranch(branch)}
+                      className={`flex items-center gap-2.5 px-3 py-1.5 rounded-xl border text-xs font-semibold backdrop-blur-md transition-all duration-300 ${
+                        isBranchActive
+                          ? "bg-[#1C1C24] shadow-[0_0_15px_rgba(99,102,241,0.15)]"
+                          : "bg-white/5 border-white/5 hover:bg-white/10 text-gray-400 hover:text-white"
+                      }`}
+                      style={{ borderColor: isBranchActive ? `${branch.color}35` : undefined }}
+                    >
+                      <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: branch.color }} />
+                      <span>{branch.name}</span>
+                    </button>
+                  )}
+
+                  {/* Hover Merge Button */}
+                  {!isBranchActive && (
+                    <button
+                      onClick={() => handleMergeBranch(branch.id)}
+                      title={`Fusionar "${branch.name}" en la rama activa`}
+                      className="opacity-0 group-hover:opacity-100 transition-opacity p-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500 hover:text-white"
+                    >
+                      <GitPullRequest className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+
+            {/* Git Timeline Nodes */}
+            {Object.values(nodes).map(node => {
+              const coord = getNodeCoord(node.id);
+              const isActive = activeNodeId === node.id;
+              const branch = branches.find(b => b.id === node.branchId);
+              const color = branch ? branch.color : "#6366F1";
+
+              return (
+                <div
+                  key={node.id}
+                  style={{ left: coord.x, top: coord.y }}
+                  className="absolute transform -translate-x-1/2 -translate-y-1/2 flex items-center z-10 cursor-pointer group"
+                  onClick={() => handleCheckoutNode(node.id)}
+                >
+                  {/* Commits visual node */}
+                  <div
+                    className={`w-6 h-6 rounded-full border-2 bg-[#0A0A0B] flex items-center justify-center transition-all duration-300 relative ${
+                      isActive ? "scale-125 border-white shadow-[0_0_15px_rgba(255,255,255,0.4)]" : "border-gray-500 hover:border-white"
+                    }`}
+                    style={{ borderColor: !isActive ? color : undefined }}
+                  >
+                    {isActive ? (
+                      <div className="w-2 h-2 rounded-full bg-white animate-pulse" />
+                    ) : (
+                      <div className="w-1.5 h-1.5 rounded-full opacity-0 group-hover:opacity-100 transition-opacity" style={{ backgroundColor: color }} />
+                    )}
+
+                    {/* Hint Label */}
+                    <div className="absolute top-7 left-1/2 transform -translate-x-1/2 bg-[#121216] border border-white/10 rounded-lg px-2 py-1 text-[10px] text-gray-400 font-semibold whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity shadow-xl z-30">
+                      {node.userMessage.content.slice(0, 20)}
+                      {node.userMessage.content.length > 20 && '...'}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      {/* -- MAIN CANVAS (GRID OF DRAGGABLE CARDS) -- */}
+      <div className="flex-1 p-8 relative overflow-hidden" ref={containerRef}>
+        <LayoutGroup>
+          <div className="w-full h-full relative min-h-[500px]">
+            {activeCardsList.length === 0 ? (
+              <div className="w-full h-full flex flex-col items-center justify-center text-center opacity-40 py-20 pointer-events-none">
+                <FileText className="w-16 h-16 text-gray-500 mb-4" />
+                <h3 className="text-xl font-semibold mb-1">Canvas Vacío</h3>
+                <p className="text-sm text-gray-400">Envía un mensaje para comenzar a generar tarjetas interactivas.</p>
               </div>
-              {turns.map((turn, i) => {
-                const isActive = turn.id === currentDisplayedTurnId;
+            ) : (
+              activeCardsList.map(card => {
+                const updatedInNode = nodes[card.updatedInTurn];
+                const changeStr = updatedInNode
+                  ? `Turno ${updatedInNode.depth + 1}: ${card.changeSummary}`
+                  : card.changeSummary;
+
                 return (
-                  <motion.button
-                    key={turn.id}
-                    layoutId={`history-node-${turn.id}`}
-                    onClick={() => setActiveTurnId(turn.id)}
-                    className={`group relative flex items-center p-3 rounded-2xl border transition-all duration-300 text-left shrink-0 max-w-[200px] backdrop-blur-md ${
-                      isActive 
-                        ? "bg-indigo-500/20 border-indigo-500/50 shadow-[0_0_20px_rgba(99,102,241,0.2)]" 
-                        : "bg-white/5 border-white/5 hover:bg-white/10"
+                  <motion.div
+                    key={card.id}
+                    layoutId={`card-container-${card.id}`}
+                    drag
+                    dragMomentum={false}
+                    dragConstraints={containerRef}
+                    onDragEnd={(e, info) => handleDragEnd(card.id, e, info)}
+                    style={{ left: card.position.x, top: card.position.y }}
+                    className={`absolute rounded-[2rem] bg-[#111113]/90 border border-white/10 shadow-2xl backdrop-blur-2xl p-6 select-none overflow-hidden transition-colors ${
+                      card.zoom === 'macro' ? 'w-[320px] h-[220px]' : card.zoom === 'meso' ? 'w-[450px] h-[340px]' : 'w-[750px] h-[480px] z-30'
                     }`}
                   >
-                    <div className="flex-1 truncate pr-4 text-sm font-medium text-gray-200">
-                      {turn.userMessage.content}
-                    </div>
-                    {isActive && (
-                      <motion.div layoutId="active-indicator" className="absolute right-3 w-2 h-2 rounded-full bg-indigo-400 shadow-[0_0_10px_rgba(99,102,241,0.8)]" />
+                    {/* Background glow according to security level */}
+                    {card.zoom === 'micro' && (
+                      <div className="absolute -top-20 -right-20 w-44 h-44 bg-indigo-500/5 blur-[50px] rounded-full pointer-events-none" />
                     )}
-                  </motion.button>
-                );
-              })}
-              
-              {isNavigatingHistory && (
-                <motion.button
-                  initial={{ opacity: 0, scale: 0.9 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  onClick={() => setActiveTurnId(latestTurnId)}
-                  className="flex items-center gap-2 justify-center px-4 py-2.5 rounded-xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/30 transition-all text-sm font-semibold shrink-0 ml-auto"
-                >
-                  Volver al Presente
-                </motion.button>
-              )}
-            </motion.div>
-          )}
-        </AnimatePresence>
 
-        {/* -- MAIN CANVAS -- */}
-        <AnimatePresence mode="wait">
-          {isIdle ? (
-            <motion.div 
-              key="idle"
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 1.05, filter: "blur(10px)" }}
-              transition={{ type: "spring", stiffness: 260, damping: 20 }}
-              className="flex-1 flex flex-col items-center justify-center p-6 z-10"
-            >
-              <motion.div layoutId="ai-avatar" className="w-20 h-20 rounded-3xl bg-gradient-to-tr from-indigo-500 to-purple-500 flex items-center justify-center mb-8 shadow-[0_0_60px_rgba(99,102,241,0.4)]">
-                <Sparkles className="w-10 h-10 text-white" />
-              </motion.div>
-              
-              <motion.h1 layoutId="main-title" className="text-5xl md:text-6xl font-bold tracking-tight mb-4 text-center text-transparent bg-clip-text bg-gradient-to-b from-white to-white/60">
-                ¿En qué te ayudo hoy?
-              </motion.h1>
-              
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 w-full max-w-3xl mt-12">
-                <PromptCard icon={<Database className="w-5 h-5 text-blue-400" />} title="Estado del Inventario" description="Revisar stock de la bodega norte" onClick={() => handleSubmit(undefined, "Revisar stock de la bodega norte")} />
-                <PromptCard icon={<Target className="w-5 h-5 text-rose-400" />} title="Predicción de Ventas" description="Proyectar Q3 basado en históricos" onClick={() => handleSubmit(undefined, "Proyectar Q3 basado en históricos")} />
-                <PromptCard icon={<Activity className="w-5 h-5 text-emerald-400" />} title="Análisis de Rendimiento" description="Comparar KPIs de este mes vs anterior" onClick={() => handleSubmit(undefined, "Comparar KPIs de este mes vs anterior")} />
-                <PromptCard icon={<Zap className="w-5 h-5 text-amber-400" />} title="Automatización" description="Configurar alertas de bajo stock" onClick={() => handleSubmit(undefined, "Configurar alertas de bajo stock")} />
-              </div>
-            </motion.div>
-          ) : (
-            <motion.div 
-              key={`canvas-${contentHash(activeTurn?.assistantMessages.map((m: any) => m.content).join('|') ?? '')}`}
-              initial={{ opacity: 0, y: 30, filter: "blur(10px)" }}
-              animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-              exit={{ opacity: 0, y: -30, filter: "blur(10px)" }}
-              transition={{ type: "spring", stiffness: 300, damping: 25 }}
-              className="flex-1 w-full max-w-5xl mx-auto flex flex-col items-center pt-[15vh] px-8 pb-40 z-10"
-            >
-              {/* Context Header (User Prompt) — layoutId based on prompt text so identical prompts persist */}
-              <motion.div layoutId={`prompt-context-${contentHash(activeTurn?.userMessage.content ?? '')}`} className="flex items-center gap-4 mb-12">
-                <div className="h-px w-12 bg-indigo-500/30" />
-                <h2 className="text-2xl font-medium text-indigo-200 tracking-tight">
-                  {activeTurn?.userMessage.content}
-                </h2>
-                <div className="h-px w-12 bg-indigo-500/30" />
-              </motion.div>
-
-              {/* Assistant Response Canvas */}
-              <div className="w-full flex flex-col items-center space-y-8">
-                {activeTurn?.assistantMessages.map((msg, i) => {
-                  // Use content hash so two messages with the same text share the same
-                  // layoutId — Framer Motion will morph instead of destroy/create.
-                  const cHash = contentHash(msg.content ?? '');
-                  return (
-                  <motion.div 
-                    key={`response-${cHash}`}
-                    layoutId={`response-${cHash}`}
-                    drag
-                    dragConstraints={containerRef}
-                    whileDrag={{ scale: 1.02, zIndex: 50, cursor: "grabbing" }}
-                    className="w-full max-w-4xl p-8 rounded-[2rem] bg-white/5 border border-white/10 backdrop-blur-2xl shadow-2xl cursor-grab hover:border-white/20 transition-colors"
-                  >
-                    <div className="flex items-start gap-6">
-                      <motion.div layoutId="ai-avatar-small" className="w-12 h-12 rounded-2xl bg-indigo-500/20 flex items-center justify-center shrink-0 border border-indigo-500/30">
-                        <Sparkles className="w-6 h-6 text-indigo-400" />
-                      </motion.div>
-                      <div className="flex-1 pt-1">
-                        <div className="prose prose-invert prose-lg md:prose-xl max-w-none text-gray-200 leading-relaxed font-light">
-                          {msg.content || "..."}
+                    {/* Card Header */}
+                    <div className="flex items-center justify-between border-b border-white/5 pb-3 mb-4">
+                      <div className="flex items-center gap-2.5">
+                        <div className="p-2 rounded-xl bg-white/5 text-indigo-400 border border-white/5">
+                          {card.type === 'kpi' ? (
+                            <Activity className="w-4 h-4" />
+                          ) : card.type === 'inventory' ? (
+                            <Database className="w-4 h-4" />
+                          ) : (
+                            <Shield className="w-4 h-4" />
+                          )}
+                        </div>
+                        <div>
+                          <h4 className="font-bold text-sm tracking-tight text-white">{card.title}</h4>
+                          <p className="text-[10px] text-gray-500 uppercase tracking-widest font-semibold">{card.type}</p>
                         </div>
                       </div>
+
+                      {/* Zoom Controls */}
+                      <button
+                        onClick={() => handleToggleZoom(card.id)}
+                        className="p-2 rounded-xl bg-white/5 border border-white/5 hover:bg-white/10 transition-all text-gray-400 hover:text-white"
+                      >
+                        {card.zoom === 'macro' ? (
+                          <ChevronDown className="w-3.5 h-3.5" />
+                        ) : card.zoom === 'meso' ? (
+                          <ChevronUp className="w-3.5 h-3.5" />
+                        ) : (
+                          <X className="w-3.5 h-3.5" />
+                        )}
+                      </button>
+                    </div>
+
+                    {/* Card Body Renderers */}
+                    {card.zoom === 'macro' && <MacroBody card={card} />}
+                    {card.zoom === 'meso' && <MesoBody card={card} />}
+                    {card.zoom === 'micro' && (
+                      <MicroBody
+                        card={card}
+                        nodes={nodes}
+                        triggerSecurityConfirmation={(actionName, risk, cb) =>
+                          setSecurityConfirmation({ actionName, riskLevel: risk, onConfirm: cb })
+                        }
+                      />
+                    )}
+
+                    {/* Change History Hint Banner */}
+                    <div className="absolute bottom-3 left-6 right-6 flex items-center gap-1.5 text-[10px] text-gray-500 font-medium border-t border-white/5 pt-2">
+                      <Clock className="w-3 h-3 text-gray-600" />
+                      <span className="truncate" title={changeStr}>{changeStr}</span>
                     </div>
                   </motion.div>
-                  );
-                })}
+                );
+              })
+            )}
+          </div>
+        </LayoutGroup>
+      </div>
 
-                {isLoading && currentDisplayedTurnId === latestTurnId && (
-                   <motion.div 
-                      initial={{ opacity: 0, scale: 0.9 }}
-                      animate={{ opacity: 1, scale: 1 }}
-                      className="p-6 rounded-3xl bg-indigo-500/10 border border-indigo-500/20 flex items-center gap-4 text-indigo-300"
-                   >
-                     <Sparkles className="w-5 h-5 animate-pulse" />
-                     <span className="font-medium tracking-wide">Analizando el contexto...</span>
-                   </motion.div>
-                )}
+      {/* -- BOTTOM INPUT BAR -- */}
+      <div className="absolute bottom-8 w-full px-4 z-40 pointer-events-none flex justify-center">
+        <div className="w-full max-w-3xl pointer-events-auto">
+          <form onSubmit={handleSubmit} className="relative flex items-center group">
+            {/* Glowing magic ambient */}
+            <div className="absolute inset-0 bg-gradient-to-r from-indigo-500/10 to-purple-500/10 blur-xl opacity-0 group-hover:opacity-100 transition-opacity rounded-[2rem]" />
+            <div className="relative w-full flex items-center bg-[#111113]/90 backdrop-blur-3xl border border-white/10 rounded-[2rem] shadow-[0_20px_50px_rgba(0,0,0,0.5)] p-2">
+              <div className="pl-5 pr-1 text-indigo-400/50">
+                <ChevronRight className="w-6 h-6" />
               </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+              <input
+                ref={inputRef}
+                type="text"
+                value={inputValue}
+                onChange={(e) => setInputValue(e.target.value)}
+                placeholder={
+                  activeNode && !Object.values(nodes).some(n => n.parentId === activeNode.id)
+                    ? "Colaborar en la línea activa..."
+                    : "Crear bifurcación en la línea temporal..."
+                }
+                className="w-full bg-transparent border-none text-white text-base px-2 py-4 focus:outline-none focus:ring-0 placeholder:text-gray-500 placeholder:font-light font-medium"
+                disabled={isLoading}
+              />
+              <button
+                type="submit"
+                disabled={!inputValue.trim() || isLoading}
+                className="p-3.5 rounded-2xl bg-indigo-500/20 text-indigo-400 hover:bg-indigo-500 hover:text-white transition-all duration-300 disabled:opacity-30 disabled:bg-transparent disabled:text-gray-600 mr-2"
+              >
+                <Send className="w-4 h-4" />
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
 
-        {/* -- FIXED INPUT WORKSPACE -- */}
-        <motion.div 
-          layoutId="input-workspace"
-          className="absolute bottom-8 w-full px-4 z-50 pointer-events-none flex justify-center"
-        >
-          <div className="w-full max-w-3xl pointer-events-auto">
-            <form 
-              onSubmit={(e) => handleSubmit(e)}
-              className="relative flex items-center group"
+      {/* -- SECURITY ACTION CONFIRMATION MODAL (SAIF 2.0) -- */}
+      <AnimatePresence>
+        {securityConfirmation && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-[#121216] border border-white/10 rounded-[2rem] max-w-md w-full p-6 shadow-2xl relative overflow-hidden"
             >
-              {/* Magic Glow */}
-              <div className="absolute inset-0 bg-gradient-to-r from-indigo-500/20 to-purple-500/20 blur-2xl opacity-0 group-hover:opacity-100 transition-opacity rounded-[2rem]" />
-              
-              <div className="relative w-full flex items-center bg-[#151517]/90 backdrop-blur-3xl border border-white/10 rounded-[2rem] shadow-[0_20px_60px_rgba(0,0,0,0.4)] overflow-hidden p-2">
-                <div className="pl-6 pr-2 text-indigo-400/50">
-                  <ChevronRight className="w-6 h-6" />
+              <div className="absolute top-0 left-0 w-full h-1 bg-red-500" />
+              <div className="flex items-start gap-4 mb-4">
+                <div className="p-3 rounded-2xl bg-red-500/10 text-red-400 border border-red-500/25">
+                  <AlertTriangle className="w-6 h-6" />
                 </div>
-                <input
-                  ref={inputRef}
-                  type="text"
-                  value={inputValue}
-                  onChange={(e) => setInputValue(e.target.value)}
-                  placeholder={isNavigatingHistory ? "Escribir creará una nueva línea temporal..." : "Colaborar con ARIA..."}
-                  className="w-full bg-transparent border-none text-white text-lg px-2 py-5 focus:outline-none focus:ring-0 placeholder:text-gray-500 placeholder:font-light font-medium"
-                  disabled={isLoading}
-                />
+                <div>
+                  <h3 className="font-bold text-lg text-white">Confirmación de Seguridad</h3>
+                  <p className="text-[10px] text-gray-500 font-bold uppercase tracking-wider">Políticas de Control SAIF 2.0</p>
+                </div>
+              </div>
+              <p className="text-gray-300 text-sm leading-relaxed mb-6">
+                El agente está intentando realizar la acción crítica: <strong className="text-white">"{securityConfirmation.actionName}"</strong>. Esto requiere privilegios mínimos aprobados manualmente por el usuario.
+              </p>
+              <div className="flex items-center gap-3">
                 <button
-                  type="submit"
-                  disabled={!inputValue.trim() || isLoading}
-                  className="p-4 rounded-2xl bg-indigo-500/20 text-indigo-400 hover:bg-indigo-500 hover:text-white transition-all duration-300 disabled:opacity-50 disabled:bg-transparent disabled:text-gray-600 mr-2 hover:scale-105 active:scale-95"
+                  onClick={() => {
+                    securityConfirmation.onConfirm();
+                    setSecurityConfirmation(null);
+                  }}
+                  className="flex-1 py-3 rounded-xl bg-red-500 hover:bg-red-600 text-white transition-all text-sm font-semibold flex items-center justify-center gap-1.5"
                 >
-                  <Send className="w-5 h-5" />
+                  <Lock className="w-4 h-4" /> Autorizar
+                </button>
+                <button
+                  onClick={() => setSecurityConfirmation(null)}
+                  className="flex-1 py-3 rounded-xl bg-white/5 border border-white/5 hover:bg-white/10 text-gray-300 transition-all text-sm font-semibold"
+                >
+                  Rechazar
                 </button>
               </div>
-            </form>
+            </motion.div>
           </div>
-        </motion.div>
-
-      </LayoutGroup>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
 
-// -- WIDGETS & CARDS --
-function PromptCard({ icon, title, description, onClick }: { icon: React.ReactNode, title: string, description: string, onClick: () => void }) {
+// -- SPECIFIC CARD ZOOM STATE RENDEREERS --
+
+// 1. MACRO STATE (Default Metrics)
+function MacroBody({ card }: { card: CardState }) {
+  const trendColor = card.macroData.trend === 'up' ? 'text-emerald-400' : card.macroData.trend === 'down' ? 'text-red-400' : 'text-gray-400';
   return (
-    <motion.button 
-      layout
-      whileHover={{ y: -4, scale: 1.02 }}
-      whileTap={{ scale: 0.98 }}
-      onClick={onClick}
-      className="group flex flex-col text-left p-6 rounded-[2rem] bg-white/5 border border-white/5 hover:bg-white/10 hover:border-white/10 transition-colors shadow-lg"
-    >
-      <div className="w-12 h-12 rounded-2xl bg-black/40 flex items-center justify-center mb-5 group-hover:scale-110 transition-transform duration-300">
-        {icon}
+    <div className="flex flex-col h-full justify-between pb-8">
+      <div>
+        <h2 className="text-3xl font-extrabold tracking-tight text-white mb-1">{card.macroData.value}</h2>
+        <div className="flex items-center gap-1">
+          {card.macroData.change && (
+            <span className={`text-xs font-bold ${trendColor}`}>{card.macroData.change}</span>
+          )}
+          {card.macroData.subtitle && (
+            <span className="text-xs text-gray-500 font-medium">— {card.macroData.subtitle}</span>
+          )}
+        </div>
       </div>
-      <h3 className="text-white font-semibold mb-2 text-xl tracking-tight">{title}</h3>
-      <p className="text-gray-400 text-sm leading-relaxed font-light">{description}</p>
-    </motion.button>
+    </div>
+  );
+}
+
+// 2. MESO STATE (Visual Breakdown)
+function MesoBody({ card }: { card: CardState }) {
+  return (
+    <div className="flex flex-col justify-between h-[230px] pb-2">
+      {/* Metrics Header */}
+      <div>
+        <h2 className="text-2xl font-extrabold tracking-tight text-white mb-1">{card.macroData.value}</h2>
+        {card.macroData.subtitle && (
+          <p className="text-xs text-gray-500 font-medium mb-4">{card.macroData.subtitle}</p>
+        )}
+      </div>
+
+      {/* SVG Bar Chart (Visual representation of detail) */}
+      {card.mesoData.chartData && card.mesoData.chartData.length > 0 ? (
+        <div className="w-full flex items-end gap-3 h-24 mb-4 px-2">
+          {card.mesoData.chartData.map((d, idx) => {
+            const maxVal = Math.max(...card.mesoData.chartData!.map(item => item.value));
+            const percentage = maxVal > 0 ? (d.value / maxVal) * 100 : 0;
+            return (
+              <div key={idx} className="flex-1 flex flex-col items-center gap-1.5 group/bar">
+                <div className="w-full bg-white/5 rounded-md h-20 flex items-end overflow-hidden">
+                  <div
+                    style={{ height: `${percentage}%` }}
+                    className="w-full bg-indigo-500 rounded-md transition-all duration-500 group-hover/bar:bg-indigo-400"
+                  />
+                </div>
+                <span className="text-[9px] font-semibold text-gray-500 group-hover/bar:text-white transition-colors">{d.label}</span>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        /* Bullet list if no charts are present */
+        <ul className="space-y-1.5 mb-4">
+          {card.mesoData.bullets?.map((b, idx) => (
+            <li key={idx} className="text-xs text-gray-300 flex items-start gap-1.5 font-light leading-relaxed">
+              <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 shrink-0 mt-1.5" />
+              <span>{b}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+// 3. MICRO STATE (Trace, Security Logs & Data Tables)
+function MicroBody({
+  card,
+  nodes,
+  triggerSecurityConfirmation
+}: {
+  card: CardState;
+  nodes: Record<string, TimelineNode>;
+  triggerSecurityConfirmation: (actionName: string, risk: 'low' | 'medium' | 'high', cb: () => void) => void;
+}) {
+  const [activeTab, setActiveTab] = useState<'table' | 'sql' | 'saif'>('table');
+
+  const trendColor = card.macroData.trend === 'up' ? 'text-emerald-400' : card.macroData.trend === 'down' ? 'text-red-400' : 'text-gray-400';
+
+  const handleActionClick = (itemName: string) => {
+    triggerSecurityConfirmation(`Reordenar ${itemName}`, 'high', () => {
+      alert(`Autorización SAIF 2.0 concedida. Acción enviada: Reordenar ${itemName}`);
+    });
+  };
+
+  return (
+    <div className="flex flex-col h-[370px]">
+      {/* Top summary row */}
+      <div className="flex items-center justify-between mb-4 pb-2 border-b border-white/5">
+        <div>
+          <h3 className="text-xl font-black text-white">{card.macroData.value}</h3>
+          <p className="text-xs text-gray-500 font-medium">{card.macroData.subtitle}</p>
+        </div>
+
+        {/* Action button triggers for specific inventory type */}
+        {card.type === 'inventory' && (
+          <button
+            onClick={() => handleActionClick("Fusor Cobre")}
+            className="px-3.5 py-2 rounded-xl bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500 hover:text-white transition-all text-xs font-bold"
+          >
+            Reordenar Todo (SAIF Confirm)
+          </button>
+        )}
+      </div>
+
+      {/* Detail Tab buttons */}
+      <div className="flex items-center gap-1.5 mb-4 border-b border-white/5 pb-2">
+        <button
+          onClick={() => setActiveTab('table')}
+          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+            activeTab === 'table' ? 'bg-white/10 text-white' : 'text-gray-400 hover:text-white'
+          }`}
+        >
+          Desglose
+        </button>
+        <button
+          onClick={() => setActiveTab('sql')}
+          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+            activeTab === 'sql' ? 'bg-white/10 text-white' : 'text-gray-400 hover:text-white'
+          }`}
+        >
+          Consulta Lógica (SQL)
+        </button>
+        <button
+          onClick={() => setActiveTab('saif')}
+          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1 ${
+            activeTab === 'saif' ? 'bg-indigo-500/20 text-indigo-400 border border-indigo-500/25' : 'text-gray-400 hover:text-white'
+          }`}
+        >
+          Seguridad SAIF
+        </button>
+      </div>
+
+      {/* Tab Panels */}
+      <div className="flex-1 overflow-y-auto pr-1">
+        {activeTab === 'table' && card.microData.tableHeaders && (
+          <table className="w-full text-left text-xs border-collapse">
+            <thead>
+              <tr className="border-b border-white/10 text-gray-500 font-bold uppercase tracking-wider">
+                {card.microData.tableHeaders.map((h, i) => (
+                  <th key={i} className="pb-2 font-bold">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {card.microData.tableRows?.map((row, idx) => (
+                <tr key={idx} className="border-b border-white/5 hover:bg-white/5">
+                  {row.map((cell, cIdx) => (
+                    <td key={cIdx} className="py-2 font-medium text-gray-300">
+                      {cell === 'Reordenar' ? (
+                        <button
+                          onClick={() => handleActionClick(row[0])}
+                          className="px-2 py-1 rounded bg-red-500/20 text-red-400 hover:bg-red-500 hover:text-white font-bold transition-all text-[10px]"
+                        >
+                          Reordenar
+                        </button>
+                      ) : (
+                        cell
+                      )}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+
+        {activeTab === 'sql' && (
+          <div className="space-y-4">
+            <div className="bg-black/40 border border-white/5 rounded-xl p-3.5 font-mono text-[10px] text-indigo-300 whitespace-pre-wrap leading-relaxed select-text">
+              {card.microData.sqlQuery || "No logical query registered."}
+            </div>
+            {card.microData.executionLogs && (
+              <div>
+                <h5 className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-1.5">Logs de Ejecución</h5>
+                <ul className="space-y-1">
+                  {card.microData.executionLogs.map((log, idx) => (
+                    <li key={idx} className="text-[10px] font-mono text-gray-400 flex items-start gap-1">
+                      <span className="text-gray-600 font-bold">▶</span>
+                      <span>{log}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === 'saif' && (
+          <div className="space-y-4">
+            {/* Safety score panel */}
+            <div className="flex items-center justify-between p-4 rounded-2xl bg-indigo-500/5 border border-indigo-500/10">
+              <div className="flex items-center gap-3">
+                <Shield className="w-5 h-5 text-indigo-400" />
+                <div>
+                  <h4 className="text-xs font-bold text-white">Score de Seguridad Generativa</h4>
+                  <p className="text-[10px] text-gray-500">Evaluado según estándares de Google PAIR</p>
+                </div>
+              </div>
+              <span className="text-lg font-black text-indigo-400">{card.microData.safetyScore || 100}%</span>
+            </div>
+
+            {/* Checklists */}
+            <div className="space-y-2">
+              <SafetyCheckItem title="Filtro contra inyecciones indirectas" checked={true} />
+              <SafetyCheckItem title="Esquema estricto de UI verificado" checked={true} />
+              <SafetyCheckItem title="Aislamiento de variables de sesión" checked={true} />
+              <SafetyCheckItem title="Acciones de modificación humana-in-the-loop" checked={card.type === 'inventory'} />
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SafetyCheckItem({ title, checked }: { title: string; checked: boolean }) {
+  return (
+    <div className="flex items-center justify-between p-2.5 rounded-xl bg-white/5 text-xs">
+      <span className="text-gray-300 font-light">{title}</span>
+      {checked ? (
+        <span className="flex items-center gap-1 text-[10px] font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-lg">
+          <Check className="w-3 h-3" /> Verificado
+        </span>
+      ) : (
+        <span className="flex items-center gap-1 text-[10px] font-bold text-gray-400 bg-white/5 px-2 py-0.5 rounded-lg">
+          No Aplica
+        </span>
+      )}
+    </div>
   );
 }
