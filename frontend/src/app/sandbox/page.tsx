@@ -268,17 +268,17 @@ function SandboxContent() {
   const [activeNodeId, setActiveNodeId] = useState<string | null>(null);
   const [dragOffsets, setDragOffsets] = useState<Record<string, { x: number; y: number }>>({});
 
-  // UI state
   const [renameBranchId, setRenameBranchId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [securityConfirmation, setSecurityConfirmation] = useState<SecurityConfirmation | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [isTimelineOpen, setIsTimelineOpen] = useState(true);
   const [timelineModal, setTimelineModal] = useState<{
-    type: 'fork' | 'merge' | 'break';
+    type: 'fork' | 'merge' | 'break' | 'error';
     nodeAId: string;
     nodeBId?: string;
     offset?: any;
+    errorMessage?: string;
   } | null>(null);
 
   const [activeBranchId, setActiveBranchId] = useState<string>("main");
@@ -609,12 +609,20 @@ function SandboxContent() {
         });
       }
     };
-
     roots.forEach(root => {
       assignDepth(root.id, 0);
     });
 
     return nextNodes;
+  };
+  const getRootId = (nodeId: string): string => {
+    const visited = new Set<string>();
+    let curr = nodes[nodeId];
+    while (curr && curr.parentId && nodes[curr.parentId] && !visited.has(curr.parentId)) {
+      visited.add(curr.id);
+      curr = nodes[curr.parentId];
+    }
+    return curr ? curr.id : nodeId;
   };
 
   const handleNodeDragEnd = (nodeId: string, event: any, info: any) => {
@@ -640,6 +648,14 @@ function SandboxContent() {
     });
 
     if (nearestNodeId && minDistance < 30) {
+      if (getRootId(nodeId) !== getRootId(nearestNodeId)) {
+        setTimelineModal({
+          type: 'error',
+          nodeAId: nodeId,
+          errorMessage: 'No se pueden fusionar universos paralelos. No es posible fusionar nodos que pertenecen a líneas temporales base distintas y sin un origen común, ya que causaría colisiones temporales críticas.'
+        });
+        return;
+      }
       setTimelineModal({
         type: 'merge',
         nodeAId: nodeId,
@@ -647,8 +663,6 @@ function SandboxContent() {
       });
       return;
     }
-
-    // 2. Check Y offset for Fork or Break
     const offsetY = info.offset.y;
 
     if (offsetY > 120) {
@@ -895,8 +909,8 @@ function SandboxContent() {
     const paths: React.ReactNode[] = [];
     Object.values(nodes).forEach(node => {
       if (node.parentId && nodes[node.parentId]) {
-        const start = getNodeCoord(node.parentId, true);
-        const end = getNodeCoord(node.id, true);
+        const start = getNodeCoord(node.parentId, false);
+        const end = getNodeCoord(node.id, false);
         const branch = branches.find(b => b.id === node.branchId);
         const color = branch ? branch.color : "#6366F1";
         const dx = (end.x - start.x) / 2;
@@ -916,8 +930,8 @@ function SandboxContent() {
       }
 
       if (node.mergeParentId && nodes[node.mergeParentId]) {
-        const start = getNodeCoord(node.mergeParentId, true);
-        const end = getNodeCoord(node.id, true);
+        const start = getNodeCoord(node.mergeParentId, false);
+        const end = getNodeCoord(node.id, false);
         const mergedBranch = branches.find(b => b.id === nodes[node.mergeParentId!].branchId);
         const color = mergedBranch ? mergedBranch.color : "#10B981";
         const dx = (end.x - start.x) / 2;
@@ -942,7 +956,7 @@ function SandboxContent() {
     branches.forEach(branch => {
       const hasNodes = Object.values(nodes).some(n => n.branchId === branch.id);
       if (!hasNodes && branch.forkParentId && nodes[branch.forkParentId]) {
-        const start = getNodeCoord(branch.forkParentId, true);
+        const start = getNodeCoord(branch.forkParentId, false);
         const parentNode = nodes[branch.forkParentId];
         const end = {
           x: (parentNode.depth + 1) * 200 + 180,
@@ -962,6 +976,31 @@ function SandboxContent() {
             fill="none"
             strokeLinecap="round"
             className="opacity-40 transition-all duration-300"
+          />
+        );
+      }
+    });
+
+    // Connections from static positions to dragged node ghosts
+    Object.values(nodes).forEach(node => {
+      if (dragOffsets[node.id]) {
+        const start = getNodeCoord(node.id, false);
+        const end = getNodeCoord(node.id, true);
+        const branch = branches.find(b => b.id === node.branchId);
+        const color = branch ? branch.color : "#6366F1";
+        const dx = (end.x - start.x) / 2;
+        const d = `M ${start.x} ${start.y} C ${start.x + dx} ${start.y}, ${end.x - dx} ${end.y}, ${end.x} ${end.y}`;
+
+        paths.push(
+          <path
+            key={`drag-ghost-line-${node.id}`}
+            d={d}
+            stroke={color}
+            strokeWidth="2.5"
+            strokeDasharray="4 4"
+            fill="none"
+            strokeLinecap="round"
+            className="opacity-60 animate-pulse"
           />
         );
       }
@@ -1077,13 +1116,35 @@ function SandboxContent() {
                   })}
 
                   {/* Git Timeline Nodes */}
-                  {Object.values(nodes).map(node => {
+                  {Object.values(nodes).flatMap(node => {
                     const coord = getNodeCoord(node.id);
                     const isActive = activeNodeId === node.id;
                     const branch = branches.find(b => b.id === node.branchId);
                     const color = branch ? branch.color : "#6366F1";
+                    
+                    const isDraggingThisNode = !!dragOffsets[node.id];
+                    const elements = [];
 
-                    return (
+                    // Render static node placeholder if currently dragging
+                    if (isDraggingThisNode) {
+                      elements.push(
+                        <div
+                          key={`static-${node.id}`}
+                          style={{ left: coord.x, top: coord.y }}
+                          className="absolute transform -translate-x-1/2 -translate-y-1/2 flex items-center z-5 opacity-60 pointer-events-none"
+                        >
+                          <div
+                            className={`w-6 h-6 rounded-full border-2 bg-[#0A0A0B] flex items-center justify-center`}
+                            style={{ borderColor: color }}
+                          >
+                            <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: color }} />
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    // Render the draggable motion node (acting as the ghost copy)
+                    elements.push(
                       <motion.div
                         key={node.id}
                         drag
@@ -1104,7 +1165,9 @@ function SandboxContent() {
                           handleNodeDragEnd(node.id, e, info);
                         }}
                         style={{ left: coord.x, top: coord.y }}
-                        className="absolute transform -translate-x-1/2 -translate-y-1/2 flex items-center z-10 cursor-pointer group"
+                        className={`absolute transform -translate-x-1/2 -translate-y-1/2 flex items-center z-10 cursor-pointer group ${
+                          isDraggingThisNode ? "opacity-60" : ""
+                        }`}
                       >
                         {/* Commits visual node */}
                         <div
@@ -1113,11 +1176,15 @@ function SandboxContent() {
                             handleCheckoutNode(node.id);
                           }}
                           className={`w-6 h-6 rounded-full border-2 bg-[#0A0A0B] flex items-center justify-center transition-all duration-300 relative ${
-                            isActive ? "scale-125 border-white shadow-[0_0_15px_rgba(255,255,255,0.4)]" : "border-gray-500 hover:border-white"
+                            isDraggingThisNode
+                              ? "border-dashed shadow-[0_0_10px_rgba(99,102,241,0.2)]"
+                              : isActive
+                              ? "scale-125 border-white shadow-[0_0_15px_rgba(255,255,255,0.4)]"
+                              : "border-gray-500 hover:border-white"
                           }`}
-                          style={{ borderColor: !isActive ? color : undefined }}
+                          style={{ borderColor: !isActive || isDraggingThisNode ? color : undefined }}
                         >
-                          {isActive ? (
+                          {isActive && !isDraggingThisNode ? (
                             <div className="w-2 h-2 rounded-full bg-white animate-pulse" />
                           ) : (
                             <div className="w-1.5 h-1.5 rounded-full opacity-0 group-hover:opacity-100 transition-opacity" style={{ backgroundColor: color }} />
@@ -1131,6 +1198,8 @@ function SandboxContent() {
                         </div>
                       </motion.div>
                     );
+
+                    return elements;
                   })}
 
                   {/* Git Timeline Ghost Nodes */}
@@ -1209,7 +1278,6 @@ function SandboxContent() {
                 const changeStr = updatedInNode
                   ? `Turno ${updatedInNode.depth + 1}: ${card.changeSummary}`
                   : card.changeSummary;
-
                 return (
                   <motion.div
                     key={card.id}
@@ -1217,6 +1285,7 @@ function SandboxContent() {
                     drag
                     dragMomentum={false}
                     dragConstraints={containerRef}
+                    transition={{ x: { type: "tween", duration: 0 }, y: { type: "tween", duration: 0 } }}
                     onDragStart={() => setIsDragging(true)}
                     onDragEnd={(e, info) => {
                       handleDragEnd(card.id, e, info);
@@ -1381,17 +1450,30 @@ function SandboxContent() {
               exit={{ scale: 0.95, opacity: 0 }}
               className="bg-[#121216] border border-white/10 rounded-[2rem] max-w-md w-full p-6 shadow-2xl relative overflow-hidden"
             >
-              <div className="absolute top-0 left-0 w-full h-1 bg-indigo-500" />
+              <div className={`absolute top-0 left-0 w-full h-1 ${timelineModal.type === 'error' ? 'bg-red-500' : 'bg-indigo-500'}`} />
               <div className="flex items-start gap-4 mb-4">
-                <div className="p-3 rounded-2xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/25">
-                  <GitBranch className="w-6 h-6" />
-                </div>
+                {timelineModal.type === 'error' ? (
+                  <div className="p-3 rounded-2xl bg-red-500/10 text-red-400 border border-red-500/25 animate-pulse">
+                    <AlertTriangle className="w-6 h-6" />
+                  </div>
+                ) : (
+                  <div className="p-3 rounded-2xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/25">
+                    <GitBranch className="w-6 h-6" />
+                  </div>
+                )}
                 <div>
-                  <h3 className="font-bold text-lg text-white">Confirmar Acción de Historial</h3>
-                  <p className="text-[10px] text-gray-500 font-bold uppercase tracking-wider">Control de Flujo SAIF 2.0</p>
+                  <h3 className="font-bold text-lg text-white">
+                    {timelineModal.type === 'error' ? 'Acción Bloqueada' : 'Confirmar Acción de Historial'}
+                  </h3>
+                  <p className="text-[10px] text-gray-500 font-bold uppercase tracking-wider">
+                    {timelineModal.type === 'error' ? 'Colisión Temporal SAIF 2.0' : 'Control de Flujo SAIF 2.0'}
+                  </p>
                 </div>
               </div>
               <p className="text-gray-300 text-sm leading-relaxed mb-6">
+                {timelineModal.type === 'error' && (
+                  <span>{timelineModal.errorMessage}</span>
+                )}
                 {timelineModal.type === 'fork' && (
                   <span>
                     ¿Deseas <strong>bifurcar (fork)</strong> la línea temporal a partir de esta conversación? Esto creará una rama paralela conservando la conversación y tarjetas previas.
@@ -1408,29 +1490,41 @@ function SandboxContent() {
                   </span>
                 )}
               </p>
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={() => {
-                    if (timelineModal.type === 'fork') {
-                      executeFork(timelineModal.nodeAId);
-                    } else if (timelineModal.type === 'merge') {
-                      executeMerge(timelineModal.nodeAId, timelineModal.nodeBId!);
-                    } else if (timelineModal.type === 'break') {
-                      executeBreak(timelineModal.nodeAId);
-                    }
-                    setTimelineModal(null);
-                  }}
-                  className="flex-1 py-3 rounded-xl bg-indigo-500 hover:bg-indigo-600 text-white transition-all text-sm font-semibold flex items-center justify-center gap-1.5"
-                >
-                  <Check className="w-4 h-4" /> Confirmar
-                </button>
-                <button
-                  onClick={() => setTimelineModal(null)}
-                  className="flex-1 py-3 rounded-xl bg-white/5 border border-white/5 hover:bg-white/10 text-gray-300 transition-all text-sm font-semibold"
-                >
-                  Cancelar
-                </button>
-              </div>
+
+              {timelineModal.type === 'error' ? (
+                <div className="flex justify-end">
+                  <button
+                    onClick={() => setTimelineModal(null)}
+                    className="w-full py-3 rounded-xl bg-red-500 hover:bg-red-600 text-white transition-all text-sm font-semibold flex items-center justify-center gap-1.5 shadow-[0_0_15px_rgba(239,68,68,0.2)]"
+                  >
+                    Entendido
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => {
+                      if (timelineModal.type === 'fork') {
+                        executeFork(timelineModal.nodeAId);
+                      } else if (timelineModal.type === 'merge') {
+                        executeMerge(timelineModal.nodeAId, timelineModal.nodeBId!);
+                      } else if (timelineModal.type === 'break') {
+                        executeBreak(timelineModal.nodeAId);
+                      }
+                      setTimelineModal(null);
+                    }}
+                    className="flex-1 py-3 rounded-xl bg-indigo-500 hover:bg-indigo-600 text-white transition-all text-sm font-semibold flex items-center justify-center gap-1.5"
+                  >
+                    <Check className="w-4 h-4" /> Confirmar
+                  </button>
+                  <button
+                    onClick={() => setTimelineModal(null)}
+                    className="flex-1 py-3 rounded-xl bg-white/5 border border-white/5 hover:bg-white/10 text-gray-300 transition-all text-sm font-semibold"
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              )}
             </motion.div>
           </div>
         )}
