@@ -142,23 +142,29 @@ async def sanitize_output(callback_context, llm_response):
     if not llm_response or not llm_response.content:
         return None
 
-    text = str(llm_response.content)
+    text = ""
+    if llm_response.content.parts:
+        text = "".join(part.text for part in llm_response.content.parts if part.text)
     text_lower = text.lower()
 
     for forbidden in _FORBIDDEN_OUTPUT:
         if forbidden.lower() in text_lower:
-            return types.Content(
-                parts=[
-                    types.Part(
-                        text="⚠️ Error interno: la respuesta contenía "
-                        "información sensible y fue bloqueada."
-                    )
-                ]
+            from google.adk.models.llm_response import LlmResponse
+            return LlmResponse(
+                content=types.Content(
+                    parts=[
+                        types.Part(
+                            text="⚠️ Error interno: la respuesta contenía "
+                            "información sensible y fue bloqueada."
+                        )
+                    ]
+                )
             )
 
     # Enforce max length to prevent runaway responses
     if len(text) > 8000:
+        from google.adk.models.llm_response import LlmResponse
         truncated = text[:7900] + "\n\n⚠️ [Respuesta truncada por longitud]"
-        return types.Content(parts=[types.Part(text=truncated)])
+        return LlmResponse(content=types.Content(parts=[types.Part(text=truncated)]))
 
     return None

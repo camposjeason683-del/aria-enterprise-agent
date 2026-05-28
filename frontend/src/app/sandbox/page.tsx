@@ -251,6 +251,7 @@ function makeSerializable(messages: any[]): any[] {
     ...(m.type && { type: m.type }),
     ...(m.name && { name: m.name }),
     ...(m.toolCalls && { toolCalls: m.toolCalls }),
+    ...(m.toolCallId && { toolCallId: m.toolCallId }),
   }));
 }
 
@@ -265,6 +266,7 @@ function SandboxContent() {
   const [nodes, setNodes] = useState<Record<string, TimelineNode>>({});
   const [branches, setBranches] = useState<TimelineBranch[]>([]);
   const [activeNodeId, setActiveNodeId] = useState<string | null>(null);
+  const [dragOffsets, setDragOffsets] = useState<Record<string, { x: number; y: number }>>({});
 
   // UI state
   const [renameBranchId, setRenameBranchId] = useState<string | null>(null);
@@ -867,7 +869,7 @@ function SandboxContent() {
   };
 
   // Node coord calculator
-  const getNodeCoord = (nodeId: string) => {
+  const getNodeCoord = (nodeId: string, includeDrag = false) => {
     const node = nodes[nodeId];
     if (!node) return { x: 0, y: 0 };
     const branch = branches.find(b => b.id === node.branchId);
@@ -876,10 +878,16 @@ function SandboxContent() {
     const rowHeight = 80;
     const paddingX = 180;
     const paddingY = 40;
-    return {
-      x: node.depth * colWidth + paddingX,
-      y: row * rowHeight + paddingY
-    };
+    
+    let x = node.depth * colWidth + paddingX;
+    let y = row * rowHeight + paddingY;
+
+    if (includeDrag && dragOffsets[nodeId]) {
+      x += dragOffsets[nodeId].x;
+      y += dragOffsets[nodeId].y;
+    }
+
+    return { x, y };
   };
 
   // SVG lines renderer
@@ -887,8 +895,8 @@ function SandboxContent() {
     const paths: React.ReactNode[] = [];
     Object.values(nodes).forEach(node => {
       if (node.parentId && nodes[node.parentId]) {
-        const start = getNodeCoord(node.parentId);
-        const end = getNodeCoord(node.id);
+        const start = getNodeCoord(node.parentId, true);
+        const end = getNodeCoord(node.id, true);
         const branch = branches.find(b => b.id === node.branchId);
         const color = branch ? branch.color : "#6366F1";
         const dx = (end.x - start.x) / 2;
@@ -908,8 +916,8 @@ function SandboxContent() {
       }
 
       if (node.mergeParentId && nodes[node.mergeParentId]) {
-        const start = getNodeCoord(node.mergeParentId);
-        const end = getNodeCoord(node.id);
+        const start = getNodeCoord(node.mergeParentId, true);
+        const end = getNodeCoord(node.id, true);
         const mergedBranch = branches.find(b => b.id === nodes[node.mergeParentId!].branchId);
         const color = mergedBranch ? mergedBranch.color : "#10B981";
         const dx = (end.x - start.x) / 2;
@@ -934,7 +942,7 @@ function SandboxContent() {
     branches.forEach(branch => {
       const hasNodes = Object.values(nodes).some(n => n.branchId === branch.id);
       if (!hasNodes && branch.forkParentId && nodes[branch.forkParentId]) {
-        const start = getNodeCoord(branch.forkParentId);
+        const start = getNodeCoord(branch.forkParentId, true);
         const parentNode = nodes[branch.forkParentId];
         const end = {
           x: (parentNode.depth + 1) * 200 + 180,
@@ -1081,7 +1089,20 @@ function SandboxContent() {
                         drag
                         dragMomentum={false}
                         dragSnapToOrigin={true}
-                        onDragEnd={(e, info) => handleNodeDragEnd(node.id, e, info)}
+                        onDrag={(e, info) => {
+                          setDragOffsets(prev => ({
+                            ...prev,
+                            [node.id]: info.offset
+                          }));
+                        }}
+                        onDragEnd={(e, info) => {
+                          setDragOffsets(prev => {
+                            const next = { ...prev };
+                            delete next[node.id];
+                            return next;
+                          });
+                          handleNodeDragEnd(node.id, e, info);
+                        }}
                         style={{ left: coord.x, top: coord.y }}
                         className="absolute transform -translate-x-1/2 -translate-y-1/2 flex items-center z-10 cursor-pointer group"
                       >
