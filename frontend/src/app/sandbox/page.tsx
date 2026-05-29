@@ -1659,6 +1659,34 @@ function SandboxContent() {
                   right: maxX,
                   bottom: maxY
                 };
+
+                /**
+                 * ============================================================================
+                 * ARQUITECTURA: SMART WRAPPER (Dynamic Component Renderer - Fase 2)
+                 * ============================================================================
+                 * Este <motion.div> actúa como la "Capa Física" (Wrapper) del componente.
+                 * Su responsabilidad exclusiva es manejar de forma agnóstica:
+                 * 1. Drag & Drop (arrastrar y soltar) controlado por Framer Motion.
+                 * 2. Zoom & Resize (interpolando dimensiones entre Micro, Meso, Macro).
+                 * 3. Interpolación de Estados en la Línea de Tiempo (Time Travel Animations).
+                 * 
+                 * REGLAS CRÍTICAS PARA PREVENIR BUGS DE ANIMACIÓN (Lecciones Aprendidas):
+                 * 
+                 * - NO usar `style={{ x, y, width, height }}`: React sobreescribe el DOM 
+                 *   instantáneamente en la fase de render, causando "teletransportación" al 
+                 *   cambiar de tiempos. Las coordenadas deben pasarse SIEMPRE al prop `animate`.
+                 * 
+                 * - TRANSICIONES CONDICIONALES (`shouldAnimateLayout`):
+                 *   Si arrastramos una tarjeta, la transición de `x` e `y` es instantánea (0s).
+                 *   Si cambiamos de nodo en la línea de tiempo, usamos una animación fluida (0.4s).
+                 *   IMPORTANTE: `shouldAnimateLayout` se evalúa síncronamente en el render.
+                 * 
+                 * - CAPA DE RENDERIZADO INTERNO (ContentRenderer):
+                 *   El HTML/JSX que va DENTRO de este wrapper solo se encarga de pintar datos
+                 *   (gráficos, tablas). Ocupan width/height 100%. Así garantizamos que cualquier
+                 *   tarjeta que el Agente IA invente herede automáticamente esta física sin bugs.
+                 * ============================================================================
+                 */
                 return (
                   <motion.div
                     key={card.id}
