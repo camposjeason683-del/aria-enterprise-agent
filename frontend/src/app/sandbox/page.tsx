@@ -281,10 +281,15 @@ function SandboxContent() {
   const [renameBranchId, setRenameBranchId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [securityConfirmation, setSecurityConfirmation] = useState<SecurityConfirmation | null>(null);
-  const [isDragging, setIsDragging] = useState(false);
-  const [isResizing, setIsResizing] = useState(false);
+  const [draggingCardId, setDraggingCardId] = useState<string | null>(null);
+  const [resizingCardId, setResizingCardId] = useState<string | null>(null);
   const [shouldAnimateLayout, setShouldAnimateLayout] = useState(false);
-  const lastActiveNodeIdRef = useRef<string | null>(null);
+  const [prevActiveNodeId, setPrevActiveNodeId] = useState<string | null>(null);
+
+  if (activeNodeId !== prevActiveNodeId) {
+    setPrevActiveNodeId(activeNodeId);
+    setShouldAnimateLayout(true);
+  }
   const [canvasSize, setCanvasSize] = useState({ width: 970, height: 636 });
   const [isTimelineOpen, setIsTimelineOpen] = useState(true);
   const [timelineModal, setTimelineModal] = useState<{
@@ -345,17 +350,15 @@ function SandboxContent() {
     };
   }, [isTimelineOpen]);
 
-  // Trigger layout animation only when changing active node (switching time state)
+  // Reset shouldAnimateLayout after the timeline transition completes (800ms)
   useEffect(() => {
-    if (activeNodeId !== lastActiveNodeIdRef.current) {
-      lastActiveNodeIdRef.current = activeNodeId;
-      setShouldAnimateLayout(true);
+    if (shouldAnimateLayout) {
       const timer = setTimeout(() => {
         setShouldAnimateLayout(false);
       }, 800);
       return () => clearTimeout(timer);
     }
-  }, [activeNodeId]);
+  }, [shouldAnimateLayout]);
 
   const loadDefaultState = () => {
     setNodes(INITIAL_NODES);
@@ -960,7 +963,7 @@ function SandboxContent() {
   };
 
   const handleResizeStart = (cardId: string, startEvent: React.PointerEvent | PointerEvent) => {
-    setIsResizing(true);
+    setResizingCardId(cardId);
     setShouldAnimateLayout(false);
     const currentActiveNodeId = latestActiveNodeIdRef.current;
     if (!currentActiveNodeId) return;
@@ -1040,7 +1043,7 @@ function SandboxContent() {
     };
 
     const handlePointerUp = () => {
-      setIsResizing(false);
+      setResizingCardId(null);
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);
 
@@ -1598,7 +1601,7 @@ function SandboxContent() {
             {/* Background grid helper visible only when dragging (enclosed inside the dashed box area) */}
             <div
               className={`absolute inset-x-8 top-3 bottom-12 rounded-[2rem] transition-opacity duration-300 pointer-events-none ${
-                isDragging ? "opacity-100" : "opacity-0"
+                 draggingCardId !== null ? "opacity-100" : "opacity-0"
               }`}
               style={{
                 backgroundImage: `
@@ -1660,17 +1663,16 @@ function SandboxContent() {
                   <motion.div
                     key={card.id}
                     initial={{ opacity: 0, scale: 0.8, x: clampedX, y: clampedY }}
-                    animate={isResizing ? {} : {
-                      width: visualWidth,
-                      height: visualHeight,
+                    animate={{
                       scale: 1,
                       opacity: 1,
-                      ...(shouldAnimateLayout ? { x: clampedX, y: clampedY } : {})
+                      ...((draggingCardId !== card.id && resizingCardId !== card.id) ? { x: clampedX, y: clampedY } : {}),
+                      ...(resizingCardId !== card.id ? { width: visualWidth, height: visualHeight } : {})
                     }}
                     exit={{ opacity: 0, scale: 0.8 }}
                     transition={{
-                      x: { type: "tween", ease: "easeOut", duration: 0.4 },
-                      y: { type: "tween", ease: "easeOut", duration: 0.4 },
+                      x: shouldAnimateLayout ? { type: "tween", ease: "easeOut", duration: 0.4 } : { duration: 0 },
+                      y: shouldAnimateLayout ? { type: "tween", ease: "easeOut", duration: 0.4 } : { duration: 0 },
                       width: { type: "tween", ease: "easeOut", duration: 0.3 },
                       height: { type: "tween", ease: "easeOut", duration: 0.3 },
                       opacity: { duration: 0.25 },
@@ -1684,18 +1686,18 @@ function SandboxContent() {
                     dragElastic={0.05}
                     onDragStart={() => {
                       setShouldAnimateLayout(false);
-                      setIsDragging(true);
+                      setDraggingCardId(card.id);
                     }}
                     onDragEnd={(e, info) => {
                       handleDragEnd(card.id, e, info, clampedX, clampedY);
-                      setIsDragging(false);
+                      setDraggingCardId(null);
                     }}
                     style={{ x: clampedX, y: clampedY, width: visualWidth, height: visualHeight, zIndex: card.zoom === 'micro' ? 30 : 10 }}
                     className="absolute left-0 top-0"
                   >
                     <motion.div
                       data-role="inner-card"
-                      animate={isResizing ? {} : { scale: currentScale, width: unscaledWidth, height: unscaledHeight }}
+                      animate={resizingCardId === card.id ? {} : { scale: currentScale, width: unscaledWidth, height: unscaledHeight }}
                       style={{ scale: currentScale, transformOrigin: 'top left', width: unscaledWidth, height: unscaledHeight }}
                       className="relative rounded-[2rem] bg-[#111113]/90 border border-white/10 shadow-2xl backdrop-blur-2xl p-6 select-none overflow-hidden transition-colors"
                     >
