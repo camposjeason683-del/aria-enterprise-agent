@@ -1026,10 +1026,16 @@ function SandboxContent() {
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);
 
-      // Clean up direct DOM modifications to allow React and Framer Motion to control layout cleanly
+      // Reset DOM modifications to the clean final state, ensuring the transform matches the scale
+      // This prevents the scale from resetting to 1.0 if React does not re-render (e.g. click/tap),
+      // and avoids any desync with Framer Motion's internal style cache.
       if (innerEl) {
         innerEl.style.scale = '';
-        innerEl.style.transform = '';
+        innerEl.style.transform = `scale(${latestScale}) translateZ(0)`;
+      }
+      if (outerEl) {
+        outerEl.style.width = `${cardWidth * latestScale}px`;
+        outerEl.style.height = `${cardHeight * latestScale}px`;
       }
 
       // Only trigger React state update and re-render if the scale actually changed
