@@ -282,6 +282,7 @@ function SandboxContent() {
   const [renameValue, setRenameValue] = useState("");
   const [securityConfirmation, setSecurityConfirmation] = useState<SecurityConfirmation | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [isResizing, setIsResizing] = useState(false);
   const [canvasSize, setCanvasSize] = useState({ width: 970, height: 636 });
   const [isTimelineOpen, setIsTimelineOpen] = useState(true);
   const [timelineModal, setTimelineModal] = useState<{
@@ -945,6 +946,7 @@ function SandboxContent() {
   };
 
   const handleResizeStart = (cardId: string, startEvent: React.PointerEvent | PointerEvent) => {
+    setIsResizing(true);
     const currentActiveNodeId = latestActiveNodeIdRef.current;
     if (!currentActiveNodeId) return;
     const currentNodes = latestNodesRef.current;
@@ -1023,6 +1025,7 @@ function SandboxContent() {
     };
 
     const handlePointerUp = () => {
+      setIsResizing(false);
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);
 
@@ -1594,14 +1597,25 @@ function SandboxContent() {
             {/* Invisibly define the drag limits inside the canvas */}
             <div className="absolute inset-x-8 top-3 bottom-12 rounded-[2rem] border border-dashed border-white/20 bg-white/[0.01] pointer-events-none transition-all" ref={dragAreaRef} />
 
-            {activeCardsList.length === 0 ? (
-              <div className="w-full h-full flex flex-col items-center justify-center text-center opacity-40 py-20 pointer-events-none">
-                <FileText className="w-16 h-16 text-gray-500 mb-4" />
-                <h3 className="text-xl font-semibold mb-1">Canvas Vacío</h3>
-                <p className="text-sm text-gray-400">Envía un mensaje para comenzar a generar tarjetas interactivas.</p>
-              </div>
-            ) : (
-              activeCardsList.map(card => {
+            <AnimatePresence>
+              {activeCardsList.length === 0 && (
+                <motion.div
+                  key="empty-canvas"
+                  initial={{ opacity: 0, scale: 0.95 }}
+                  animate={{ opacity: 0.4, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.95 }}
+                  transition={{ duration: 0.2 }}
+                  className="w-full h-full flex flex-col items-center justify-center text-center py-20 pointer-events-none"
+                >
+                  <FileText className="w-16 h-16 text-gray-500 mb-4" />
+                  <h3 className="text-xl font-semibold mb-1">Canvas Vacío</h3>
+                  <p className="text-sm text-gray-400">Envía un mensaje para comenzar a generar tarjetas interactivas.</p>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            <AnimatePresence mode="popLayout">
+              {activeCardsList.map(card => {
                 const updatedInNode = nodes[card.updatedInTurn];
                 const changeStr = updatedInNode
                   ? `Turno ${updatedInNode.depth + 1}: ${card.changeSummary}`
@@ -1630,6 +1644,11 @@ function SandboxContent() {
                 return (
                   <motion.div
                     key={card.id}
+                    layout={isResizing ? false : "position"}
+                    initial={{ opacity: 0, scale: 0.8 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.8 }}
+                    transition={{ type: "spring", stiffness: 350, damping: 30 }}
                     data-card-id={card.id}
                     data-role="outer-card"
                     drag
@@ -1734,8 +1753,8 @@ function SandboxContent() {
                     </motion.div>
                   </motion.div>
                 );
-              })
-            )}
+              })}
+            </AnimatePresence>
           </div>
         </LayoutGroup>
       </div>
