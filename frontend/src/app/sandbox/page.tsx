@@ -1659,12 +1659,20 @@ function SandboxContent() {
                 return (
                   <motion.div
                     key={card.id}
-                    initial={{ opacity: 0, scale: 0.8 }}
-                    animate={shouldAnimateLayout ? { x: clampedX, y: clampedY, scale: 1, opacity: 1 } : { scale: 1, opacity: 1 }}
+                    initial={{ opacity: 0, scale: 0.8, x: clampedX, y: clampedY }}
+                    animate={isResizing ? {} : {
+                      width: visualWidth,
+                      height: visualHeight,
+                      scale: 1,
+                      opacity: 1,
+                      ...(shouldAnimateLayout ? { x: clampedX, y: clampedY } : {})
+                    }}
                     exit={{ opacity: 0, scale: 0.8 }}
                     transition={{
                       x: { type: "tween", ease: "easeOut", duration: 0.4 },
                       y: { type: "tween", ease: "easeOut", duration: 0.4 },
+                      width: { type: "tween", ease: "easeOut", duration: 0.3 },
+                      height: { type: "tween", ease: "easeOut", duration: 0.3 },
                       opacity: { duration: 0.25 },
                       scale: { duration: 0.25 }
                     }}
@@ -1687,6 +1695,7 @@ function SandboxContent() {
                   >
                     <motion.div
                       data-role="inner-card"
+                      animate={isResizing ? {} : { scale: currentScale, width: unscaledWidth, height: unscaledHeight }}
                       style={{ scale: currentScale, transformOrigin: 'top left', width: unscaledWidth, height: unscaledHeight }}
                       className="relative rounded-[2rem] bg-[#111113]/90 border border-white/10 shadow-2xl backdrop-blur-2xl p-6 select-none overflow-hidden transition-colors"
                     >
