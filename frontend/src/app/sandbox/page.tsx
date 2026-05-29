@@ -283,6 +283,8 @@ function SandboxContent() {
   const [securityConfirmation, setSecurityConfirmation] = useState<SecurityConfirmation | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
+  const [shouldAnimateLayout, setShouldAnimateLayout] = useState(false);
+  const lastActiveNodeIdRef = useRef<string | null>(null);
   const [canvasSize, setCanvasSize] = useState({ width: 970, height: 636 });
   const [isTimelineOpen, setIsTimelineOpen] = useState(true);
   const [timelineModal, setTimelineModal] = useState<{
@@ -342,6 +344,18 @@ function SandboxContent() {
       window.removeEventListener('resize', handleResize);
     };
   }, [isTimelineOpen]);
+
+  // Trigger layout animation only when changing active node (switching time state)
+  useEffect(() => {
+    if (activeNodeId !== lastActiveNodeIdRef.current) {
+      lastActiveNodeIdRef.current = activeNodeId;
+      setShouldAnimateLayout(true);
+      const timer = setTimeout(() => {
+        setShouldAnimateLayout(false);
+      }, 800);
+      return () => clearTimeout(timer);
+    }
+  }, [activeNodeId]);
 
   const loadDefaultState = () => {
     setNodes(INITIAL_NODES);
@@ -1644,11 +1658,15 @@ function SandboxContent() {
                 return (
                   <motion.div
                     key={card.id}
-                    layout={isResizing ? false : "position"}
+                    layout={shouldAnimateLayout ? "position" : false}
                     initial={{ opacity: 0, scale: 0.8 }}
                     animate={{ opacity: 1, scale: 1 }}
                     exit={{ opacity: 0, scale: 0.8 }}
-                    transition={{ type: "spring", stiffness: 350, damping: 30 }}
+                    transition={{
+                      layout: { type: "tween", ease: "easeOut", duration: 0.35 },
+                      opacity: { duration: 0.25 },
+                      scale: { duration: 0.25 }
+                    }}
                     data-card-id={card.id}
                     data-role="outer-card"
                     drag
