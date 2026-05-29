@@ -1653,15 +1653,15 @@ function SandboxContent() {
                     data-role="outer-card"
                     drag
                     dragMomentum={false}
-                    dragConstraints={cardConstraints}
+                    dragConstraints={dragAreaRef}
                     dragElastic={0.05}
                     onDragStart={() => setIsDragging(true)}
                     onDragEnd={(e, info) => {
                       handleDragEnd(card.id, e, info, clampedX, clampedY);
                       setIsDragging(false);
                     }}
-                    style={{ x: clampedX, y: clampedY, width: visualWidth, height: visualHeight, zIndex: card.zoom === 'micro' ? 30 : 10 }}
-                    className="absolute left-0 top-0"
+                    style={{ left: clampedX, top: clampedY, width: visualWidth, height: visualHeight, zIndex: card.zoom === 'micro' ? 30 : 10 }}
+                    className="absolute"
                   >
                     <motion.div
                       data-role="inner-card"
