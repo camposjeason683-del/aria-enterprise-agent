@@ -276,7 +276,7 @@ function SandboxContent() {
   const [renameValue, setRenameValue] = useState("");
   const [securityConfirmation, setSecurityConfirmation] = useState<SecurityConfirmation | null>(null);
   const [isDragging, setIsDragging] = useState(false);
-  const [dragConstraints, setDragConstraints] = useState<{ left: number; right: number; top: number; bottom: number } | null>(null);
+  const [canvasSize, setCanvasSize] = useState({ width: 970, height: 636 });
   const [isTimelineOpen, setIsTimelineOpen] = useState(true);
   const [timelineModal, setTimelineModal] = useState<{
     type: 'fork' | 'merge' | 'break' | 'error' | 'revert';
@@ -317,6 +317,24 @@ function SandboxContent() {
       loadDefaultState();
     }
   }, []);
+
+  useEffect(() => {
+    const handleResize = () => {
+      const container = canvasRef.current;
+      if (container) {
+        setCanvasSize({
+          width: container.clientWidth,
+          height: container.clientHeight
+        });
+      }
+    };
+    const timer = setTimeout(handleResize, 100);
+    window.addEventListener('resize', handleResize);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener('resize', handleResize);
+    };
+  }, [isTimelineOpen]);
 
   const loadDefaultState = () => {
     setNodes(INITIAL_NODES);
@@ -920,33 +938,6 @@ function SandboxContent() {
     }, 50);
   };
 
-  const handleDragStart = (card: CardState) => {
-    setIsDragging(true);
-    const container = canvasRef.current;
-    if (container) {
-      const containerWidth = container.clientWidth;
-      const containerHeight = container.clientHeight;
-      let cardWidth = 320;
-      let cardHeight = 220;
-      if (card.zoom === 'meso') {
-        cardWidth = 450;
-        cardHeight = 340;
-      } else if (card.zoom === 'micro') {
-        cardWidth = 750;
-        cardHeight = 480;
-      }
-      const currentScale = card.scale || 1;
-      const visualWidth = cardWidth * currentScale;
-      const visualHeight = cardHeight * currentScale;
-      setDragConstraints({
-        left: 32,
-        top: 12,
-        right: Math.max(32, containerWidth - visualWidth - 32),
-        bottom: Math.max(12, containerHeight - visualHeight - 48)
-      });
-    }
-  };
-
   const handleResizeStart = (cardId: string, startEvent: React.PointerEvent) => {
     if (!activeNodeId) return;
     const node = nodes[activeNodeId];
@@ -1546,19 +1537,29 @@ function SandboxContent() {
                 const changeStr = updatedInNode
                   ? `Turno ${updatedInNode.depth + 1}: ${card.changeSummary}`
                   : card.changeSummary;
+
+                const currentScale = card.scale || 1;
+                const visualWidth = (card.zoom === 'macro' ? 320 : card.zoom === 'meso' ? 450 : 750) * currentScale;
+                const visualHeight = (card.zoom === 'macro' ? 220 : card.zoom === 'meso' ? 340 : 480) * currentScale;
+
+                const cardConstraints = {
+                  left: -Math.max(0, card.position.x - 32),
+                  top: -Math.max(0, card.position.y - 12),
+                  right: Math.max(0, canvasSize.width - 32 - (card.position.x + visualWidth)),
+                  bottom: Math.max(0, canvasSize.height - 48 - (card.position.y + visualHeight))
+                };
                 return (
                   <motion.div
                     key={card.id}
                     layoutId={`card-container-${card.id}`}
                     drag
                     dragMomentum={false}
-                    dragConstraints={dragConstraints || dragAreaRef}
+                    dragConstraints={cardConstraints}
                     dragElastic={0.05}
-                    onDragStart={() => handleDragStart(card)}
+                    onDragStart={() => setIsDragging(true)}
                     onDragEnd={(e, info) => {
                       handleDragEnd(card.id, e, info);
                       setIsDragging(false);
-                      setDragConstraints(null);
                     }}
                     style={{ x: card.position.x, y: card.position.y, scale: card.scale || 1, transformOrigin: 'top left' }}
                     className={`absolute left-0 top-0 rounded-[2rem] bg-[#111113]/90 border border-white/10 shadow-2xl backdrop-blur-2xl p-6 select-none overflow-hidden transition-colors ${
