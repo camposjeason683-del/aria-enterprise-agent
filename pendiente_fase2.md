@@ -22,6 +22,30 @@ El agente cruza datos en segundo plano y busca anomalías de forma autónoma.
 *   **Ramificación (Branching):** Este es el mayor poder de la línea de tiempo. Si el agente detecta un problema futuro, **crea una rama paralela (Simulación)** en la línea de tiempo.
 *   **Ejemplo:** *"He notado un patrón inusual en las ventas de la región sur. He creado una rama llamada 'Simulación: Caída de stock Sur'. En esa línea de tiempo te he dejado un plan de reabastecimiento que puedes ejecutar con un clic."*
 
+
+---
+
+## La Arquitectura del Envoltorio Inteligente (SmartWrapper)
+
+Para garantizar la reutilización de código y evitar duplicación de bugs en las animaciones, implementaremos un patrón de **Renderizado de Componentes Dinámico** compuesto por dos capas:
+
+### Capa 1: El Envoltorio (SmartWrapper.tsx)
+Este componente encapsulará TODA la lógica visual y de interacción compleja que validamos en la fase anterior:
+*   Framer Motion para arrastrar y soltar (drag & drop) sin saltos.
+*   Controles de redimensionamiento estandarizado (Micro, Meso, Macro).
+*   Interpolación fluida de posiciones al viajar por la línea temporal.
+*   Brillos y estilos de fondo según el nivel de alerta de la tarjeta.
+
+El *Wrapper* actúa como una "caja mágica" agnóstica; no le importa qué datos tiene adentro, solo se encarga de que la caja se mueva y redimensione perfectamente sin bugs, aislando la lógica compleja de UI.
+
+### Capa 2: El Renderizador Dinámico (ContentRenderer.tsx)
+Este subcomponente se monta *dentro* del Wrapper y es alimentado por un JSON de configuración generado por el Agente LLM. Se encarga únicamente de dibujar los datos del negocio (agnóstico al movimiento):
+*   Gráficos (Barras, Líneas, Donas).
+*   Tablas de datos dinámicas.
+*   Métricas clave (KPIs) o Markdown.
+
+> **El Beneficio Real:** Cualquier tarjeta futura (por ejemplo, un nuevo "Mapa Satelital de Logística") heredará automáticamente la capacidad de redimensionarse y animarse en la línea temporal por el simple hecho de ser inyectada dentro del `SmartWrapper`. Si se encuentra un bug visual en el sistema de grid o timeline, se arregla una sola vez en el Wrapper y se propaga instantáneamente a todas las tarjetas del sistema, asegurando robustez.
+
 ---
 
 ## Capacidades Base a Desarrollar (CopilotKit Tools)
