@@ -968,8 +968,16 @@ function SandboxContent() {
       const scaleChangeY = deltaY / cardHeight;
       const scaleChange = (scaleChangeX + scaleChangeY) / 2;
 
+      let maxScaleX = 1.0;
+      let maxScaleY = 1.0;
+      if (canvasSize.width > 0 && canvasSize.height > 0) {
+        maxScaleX = (canvasSize.width - 32 - card.position.x) / cardWidth;
+        maxScaleY = (canvasSize.height - 48 - card.position.y) / cardHeight;
+      }
+      const maxAllowedScale = Math.min(1.0, Math.max(0.5, Math.min(maxScaleX, maxScaleY)));
+
       let newScale = startScale + scaleChange;
-      newScale = Math.max(0.5, Math.min(1.0, newScale));
+      newScale = Math.max(0.5, Math.min(maxAllowedScale, newScale));
 
       setNodes(prev => {
         const activeNode = prev[activeNodeId];
@@ -1539,19 +1547,20 @@ function SandboxContent() {
                   : card.changeSummary;
 
                 const currentScale = card.scale || 1;
-                const visualWidth = (card.zoom === 'macro' ? 320 : card.zoom === 'meso' ? 450 : 750) * currentScale;
-                const visualHeight = (card.zoom === 'macro' ? 220 : card.zoom === 'meso' ? 340 : 480) * currentScale;
+                const unscaledWidth = card.zoom === 'macro' ? 320 : card.zoom === 'meso' ? 450 : 750;
+                const unscaledHeight = card.zoom === 'macro' ? 220 : card.zoom === 'meso' ? 340 : 480;
+                const visualWidth = unscaledWidth * currentScale;
+                const visualHeight = unscaledHeight * currentScale;
 
                 const cardConstraints = {
                   left: -Math.max(0, card.position.x - 32),
                   top: -Math.max(0, card.position.y - 12),
-                  right: Math.max(0, canvasSize.width - 32 - (card.position.x + visualWidth)),
-                  bottom: Math.max(0, canvasSize.height - 48 - (card.position.y + visualHeight))
+                  right: Math.max(0, canvasSize.width - 32 - (card.position.x + visualWidth) + unscaledWidth),
+                  bottom: Math.max(0, canvasSize.height - 48 - (card.position.y + visualHeight) + unscaledHeight)
                 };
                 return (
                   <motion.div
                     key={card.id}
-                    layoutId={`card-container-${card.id}`}
                     drag
                     dragMomentum={false}
                     dragConstraints={cardConstraints}
