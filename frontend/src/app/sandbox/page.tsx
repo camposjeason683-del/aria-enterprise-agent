@@ -961,6 +961,7 @@ function SandboxContent() {
 
   const handleResizeStart = (cardId: string, startEvent: React.PointerEvent | PointerEvent) => {
     setIsResizing(true);
+    setShouldAnimateLayout(false);
     const currentActiveNodeId = latestActiveNodeIdRef.current;
     if (!currentActiveNodeId) return;
     const currentNodes = latestNodesRef.current;
@@ -1658,12 +1659,12 @@ function SandboxContent() {
                 return (
                   <motion.div
                     key={card.id}
-                    layout={shouldAnimateLayout ? "position" : false}
                     initial={{ opacity: 0, scale: 0.8 }}
-                    animate={{ opacity: 1, scale: 1 }}
+                    animate={shouldAnimateLayout ? { x: clampedX, y: clampedY, scale: 1, opacity: 1 } : { scale: 1, opacity: 1 }}
                     exit={{ opacity: 0, scale: 0.8 }}
                     transition={{
-                      layout: { type: "tween", ease: "easeOut", duration: 0.35 },
+                      x: { type: "tween", ease: "easeOut", duration: 0.4 },
+                      y: { type: "tween", ease: "easeOut", duration: 0.4 },
                       opacity: { duration: 0.25 },
                       scale: { duration: 0.25 }
                     }}
@@ -1671,15 +1672,18 @@ function SandboxContent() {
                     data-role="outer-card"
                     drag
                     dragMomentum={false}
-                    dragConstraints={dragAreaRef}
+                    dragConstraints={cardConstraints}
                     dragElastic={0.05}
-                    onDragStart={() => setIsDragging(true)}
+                    onDragStart={() => {
+                      setShouldAnimateLayout(false);
+                      setIsDragging(true);
+                    }}
                     onDragEnd={(e, info) => {
                       handleDragEnd(card.id, e, info, clampedX, clampedY);
                       setIsDragging(false);
                     }}
-                    style={{ left: clampedX, top: clampedY, width: visualWidth, height: visualHeight, zIndex: card.zoom === 'micro' ? 30 : 10 }}
-                    className="absolute"
+                    style={{ x: clampedX, y: clampedY, width: visualWidth, height: visualHeight, zIndex: card.zoom === 'micro' ? 30 : 10 }}
+                    className="absolute left-0 top-0"
                   >
                     <motion.div
                       data-role="inner-card"
