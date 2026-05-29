@@ -1027,14 +1027,16 @@ function SandboxContent() {
 
       // Only trigger React state update and re-render if the scale actually changed
       if (Math.abs(latestScale - startScale) > 0.001) {
+        const currentActiveNodeId = latestActiveNodeIdRef.current;
         setNodes(prev => {
-          const activeNode = prev[activeNodeId];
+          if (!currentActiveNodeId) return prev;
+          const activeNode = prev[currentActiveNodeId];
           if (!activeNode) return prev;
           const currentCard = activeNode.activeCards[cardId];
           if (!currentCard) return prev;
           return {
             ...prev,
-            [activeNodeId]: {
+            [currentActiveNodeId]: {
               ...activeNode,
               activeCards: {
                 ...activeNode.activeCards,
