@@ -947,7 +947,7 @@ function SandboxContent() {
     }
   };
 
-  const handleResizeStart = (cardId: string, startEvent: React.MouseEvent | React.TouchEvent) => {
+  const handleResizeStart = (cardId: string, startEvent: React.PointerEvent) => {
     if (!activeNodeId) return;
     const node = nodes[activeNodeId];
     if (!node) return;
@@ -965,18 +965,12 @@ function SandboxContent() {
     }
 
     const startScale = card.scale || 1;
-    const isTouchEvent = startEvent.type.startsWith('touch');
-    const startMouseX = isTouchEvent ? (startEvent as any).touches[0].clientX : (startEvent as any).clientX;
-    const startMouseY = isTouchEvent ? (startEvent as any).touches[0].clientY : (startEvent as any).clientY;
+    const startMouseX = startEvent.clientX;
+    const startMouseY = startEvent.clientY;
 
-    const handleMouseMove = (moveEvent: any) => {
-      const isMoveTouch = moveEvent.type.startsWith('touch');
-      if (isMoveTouch && (!moveEvent.touches || moveEvent.touches.length === 0)) return;
-      const currentX = isMoveTouch ? moveEvent.touches[0].clientX : moveEvent.clientX;
-      const currentY = isMoveTouch ? moveEvent.touches[0].clientY : moveEvent.clientY;
-
-      const deltaX = currentX - startMouseX;
-      const deltaY = currentY - startMouseY;
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      const deltaX = moveEvent.clientX - startMouseX;
+      const deltaY = moveEvent.clientY - startMouseY;
 
       // Proportional scale change based on relative drag distance
       const scaleChangeX = deltaX / cardWidth;
@@ -1007,17 +1001,13 @@ function SandboxContent() {
       });
     };
 
-    const handleMouseUp = () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
-      window.removeEventListener('touchmove', handleMouseMove);
-      window.removeEventListener('touchend', handleMouseUp);
+    const handlePointerUp = () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
     };
 
-    window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('mouseup', handleMouseUp);
-    window.addEventListener('touchmove', handleMouseMove, { passive: true });
-    window.addEventListener('touchend', handleMouseUp);
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
   };
 
   const handleDragEnd = (cardId: string, event: any, info: any) => {
@@ -1635,11 +1625,7 @@ function SandboxContent() {
                     {/* Proportional Resize Handle */}
                     <div
                       className="absolute bottom-3 right-3 w-4 h-4 cursor-se-resize z-50 flex items-center justify-center opacity-30 hover:opacity-100 hover:scale-110 active:scale-95 transition-all"
-                      onMouseDown={(e) => {
-                        e.stopPropagation();
-                        handleResizeStart(card.id, e);
-                      }}
-                      onTouchStart={(e) => {
+                      onPointerDown={(e) => {
                         e.stopPropagation();
                         handleResizeStart(card.id, e);
                       }}
