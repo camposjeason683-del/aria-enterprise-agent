@@ -961,10 +961,11 @@ function SandboxContent() {
     const outerEl = document.querySelector(`[data-card-id="${cardId}"][data-role="outer-card"]`) as HTMLElement;
     const innerEl = outerEl ? (outerEl.querySelector('[data-role="inner-card"]') as HTMLElement) : null;
 
-    // Measure exact physical unscaled dimensions of the card using the DOM
-    const outerRect = outerEl ? outerEl.getBoundingClientRect() : null;
-    const cardWidth = outerRect ? (outerRect.width / startScale) : (card.zoom === 'macro' ? 320 : card.zoom === 'meso' ? 450 : 750);
-    const cardHeight = outerRect ? (outerRect.height / startScale) : (card.zoom === 'macro' ? 220 : card.zoom === 'meso' ? 340 : 480);
+    // Use the exact unscaled dimensions corresponding to the card's zoom level
+    // This avoids race conditions and rounding errors from getBoundingClientRect() during animations/transitions
+    const cardWidth = card.zoom === 'macro' ? 320 : card.zoom === 'meso' ? 450 : 750;
+    const cardHeight = card.zoom === 'macro' ? 220 : card.zoom === 'meso' ? 340 : 480;
+
 
     // Calculate boundary constraints at the start of resize using actual DOM measurements
     const minX = 32;
@@ -1024,6 +1025,12 @@ function SandboxContent() {
     const handlePointerUp = () => {
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);
+
+      // Clean up direct DOM modifications to allow React and Framer Motion to control layout cleanly
+      if (innerEl) {
+        innerEl.style.scale = '';
+        innerEl.style.transform = '';
+      }
 
       // Only trigger React state update and re-render if the scale actually changed
       if (Math.abs(latestScale - startScale) > 0.001) {
