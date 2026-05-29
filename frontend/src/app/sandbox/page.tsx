@@ -71,6 +71,7 @@ export interface CardState {
   zoom: 'macro' | 'meso' | 'micro';
   updatedInTurn: string;
   changeSummary: string;
+  scale?: number;
 }
 
 export interface TimelineNode {
@@ -275,6 +276,7 @@ function SandboxContent() {
   const [renameValue, setRenameValue] = useState("");
   const [securityConfirmation, setSecurityConfirmation] = useState<SecurityConfirmation | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [dragConstraints, setDragConstraints] = useState<{ left: number; right: number; top: number; bottom: number } | null>(null);
   const [isTimelineOpen, setIsTimelineOpen] = useState(true);
   const [timelineModal, setTimelineModal] = useState<{
     type: 'fork' | 'merge' | 'break' | 'error' | 'revert';
@@ -918,6 +920,106 @@ function SandboxContent() {
     }, 50);
   };
 
+  const handleDragStart = (card: CardState) => {
+    setIsDragging(true);
+    const container = canvasRef.current;
+    if (container) {
+      const containerWidth = container.clientWidth;
+      const containerHeight = container.clientHeight;
+      let cardWidth = 320;
+      let cardHeight = 220;
+      if (card.zoom === 'meso') {
+        cardWidth = 450;
+        cardHeight = 340;
+      } else if (card.zoom === 'micro') {
+        cardWidth = 750;
+        cardHeight = 480;
+      }
+      const currentScale = card.scale || 1;
+      const visualWidth = cardWidth * currentScale;
+      const visualHeight = cardHeight * currentScale;
+      setDragConstraints({
+        left: 32,
+        top: 12,
+        right: Math.max(32, containerWidth - visualWidth - 32),
+        bottom: Math.max(12, containerHeight - visualHeight - 48)
+      });
+    }
+  };
+
+  const handleResizeStart = (cardId: string, startEvent: React.MouseEvent | React.TouchEvent) => {
+    if (!activeNodeId) return;
+    const node = nodes[activeNodeId];
+    if (!node) return;
+    const card = node.activeCards[cardId];
+    if (!card) return;
+
+    let cardWidth = 320;
+    let cardHeight = 220;
+    if (card.zoom === 'meso') {
+      cardWidth = 450;
+      cardHeight = 340;
+    } else if (card.zoom === 'micro') {
+      cardWidth = 750;
+      cardHeight = 480;
+    }
+
+    const startScale = card.scale || 1;
+    const isTouchEvent = startEvent.type.startsWith('touch');
+    const startMouseX = isTouchEvent ? (startEvent as any).touches[0].clientX : (startEvent as any).clientX;
+    const startMouseY = isTouchEvent ? (startEvent as any).touches[0].clientY : (startEvent as any).clientY;
+
+    const handleMouseMove = (moveEvent: any) => {
+      const isMoveTouch = moveEvent.type.startsWith('touch');
+      if (isMoveTouch && (!moveEvent.touches || moveEvent.touches.length === 0)) return;
+      const currentX = isMoveTouch ? moveEvent.touches[0].clientX : moveEvent.clientX;
+      const currentY = isMoveTouch ? moveEvent.touches[0].clientY : moveEvent.clientY;
+
+      const deltaX = currentX - startMouseX;
+      const deltaY = currentY - startMouseY;
+
+      // Proportional scale change based on relative drag distance
+      const scaleChangeX = deltaX / cardWidth;
+      const scaleChangeY = deltaY / cardHeight;
+      const scaleChange = (scaleChangeX + scaleChangeY) / 2;
+
+      let newScale = startScale + scaleChange;
+      newScale = Math.max(0.5, Math.min(1.0, newScale));
+
+      setNodes(prev => {
+        const activeNode = prev[activeNodeId];
+        if (!activeNode) return prev;
+        const currentCard = activeNode.activeCards[cardId];
+        if (!currentCard) return prev;
+        return {
+          ...prev,
+          [activeNodeId]: {
+            ...activeNode,
+            activeCards: {
+              ...activeNode.activeCards,
+              [cardId]: {
+                ...currentCard,
+                scale: newScale
+              }
+            }
+          }
+        };
+      });
+    };
+
+    const handleMouseUp = () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+      window.removeEventListener('touchmove', handleMouseMove);
+      window.removeEventListener('touchend', handleMouseUp);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    window.addEventListener('touchmove', handleMouseMove, { passive: true });
+    window.addEventListener('touchend', handleMouseUp);
+  };
+
   const handleDragEnd = (cardId: string, event: any, info: any) => {
     if (!activeNodeId) return;
     const container = canvasRef.current;
@@ -941,13 +1043,17 @@ function SandboxContent() {
         cardHeight = 480;
       }
 
+      const currentScale = card.scale || 1;
+      const visualWidth = cardWidth * currentScale;
+      const visualHeight = cardHeight * currentScale;
+
       let newX = card.position.x + info.offset.x;
       let newY = card.position.y + info.offset.y;
 
       const minX = 32;
       const minY = 12;
-      const maxX = Math.max(minX, containerWidth - cardWidth - 32);
-      const maxY = Math.max(minY, containerHeight - cardHeight - 48); // 48px bottom margin to avoid overlapping input bar
+      const maxX = Math.max(minX, containerWidth - visualWidth - 32);
+      const maxY = Math.max(minY, containerHeight - visualHeight - 48); // 48px bottom margin to avoid overlapping input bar
 
       newX = Math.max(minX, Math.min(maxX, newX));
       newY = Math.max(minY, Math.min(maxY, newY));
@@ -999,10 +1105,14 @@ function SandboxContent() {
           nextHeight = 480;
         }
 
+        const currentScale = card.scale || 1;
+        const visualWidth = nextWidth * currentScale;
+        const visualHeight = nextHeight * currentScale;
+
         const minX = 32;
         const minY = 12;
-        const maxX = Math.max(minX, containerWidth - nextWidth - 32);
-        const maxY = Math.max(minY, containerHeight - nextHeight - 48); // 48px bottom margin to avoid overlapping input bar
+        const maxX = Math.max(minX, containerWidth - visualWidth - 32);
+        const maxY = Math.max(minY, containerHeight - visualHeight - 48); // 48px bottom margin to avoid overlapping input bar
 
         newX = Math.max(minX, Math.min(maxX, newX));
         newY = Math.max(minY, Math.min(maxY, newY));
@@ -1452,14 +1562,15 @@ function SandboxContent() {
                     layoutId={`card-container-${card.id}`}
                     drag
                     dragMomentum={false}
-                    dragConstraints={dragAreaRef}
+                    dragConstraints={dragConstraints || dragAreaRef}
                     dragElastic={0.05}
-                    onDragStart={() => setIsDragging(true)}
+                    onDragStart={() => handleDragStart(card)}
                     onDragEnd={(e, info) => {
                       handleDragEnd(card.id, e, info);
                       setIsDragging(false);
+                      setDragConstraints(null);
                     }}
-                    style={{ x: card.position.x, y: card.position.y }}
+                    style={{ x: card.position.x, y: card.position.y, scale: card.scale || 1, transformOrigin: 'top left' }}
                     className={`absolute left-0 top-0 rounded-[2rem] bg-[#111113]/90 border border-white/10 shadow-2xl backdrop-blur-2xl p-6 select-none overflow-hidden transition-colors ${
                       card.zoom === 'macro' ? 'w-[320px] h-[220px]' : card.zoom === 'meso' ? 'w-[450px] h-[340px]' : 'w-[750px] h-[480px] z-30'
                     }`}
@@ -1516,9 +1627,28 @@ function SandboxContent() {
                     )}
 
                     {/* Change History Hint Banner */}
-                    <div className="absolute bottom-3 left-6 right-6 flex items-center gap-1.5 text-[10px] text-gray-500 font-medium border-t border-white/5 pt-2">
+                    <div className="absolute bottom-3 left-6 right-10 flex items-center gap-1.5 text-[10px] text-gray-500 font-medium border-t border-white/5 pt-2">
                       <Clock className="w-3 h-3 text-gray-600" />
                       <span className="truncate" title={changeStr}>{changeStr}</span>
+                    </div>
+
+                    {/* Proportional Resize Handle */}
+                    <div
+                      className="absolute bottom-3 right-3 w-4 h-4 cursor-se-resize z-50 flex items-center justify-center opacity-30 hover:opacity-100 hover:scale-110 active:scale-95 transition-all"
+                      onMouseDown={(e) => {
+                        e.stopPropagation();
+                        handleResizeStart(card.id, e);
+                      }}
+                      onTouchStart={(e) => {
+                        e.stopPropagation();
+                        handleResizeStart(card.id, e);
+                      }}
+                      title="Arrastrar para redimensionar (50% - 100%)"
+                    >
+                      <svg width="10" height="10" viewBox="0 0 10 10" className="text-gray-400">
+                        <line x1="10" y1="2" x2="2" y2="10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                        <line x1="10" y1="6" x2="6" y2="10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                      </svg>
                     </div>
                   </motion.div>
                 );
