@@ -971,8 +971,20 @@ function SandboxContent() {
       let maxScaleX = 1.0;
       let maxScaleY = 1.0;
       if (canvasSize.width > 0 && canvasSize.height > 0) {
-        maxScaleX = (canvasSize.width - 32 - card.position.x) / cardWidth;
-        maxScaleY = (canvasSize.height - 48 - card.position.y) / cardHeight;
+        const startVisualWidth = cardWidth * startScale;
+        const startVisualHeight = cardHeight * startScale;
+        
+        // Calculate the actual rendered (clamped) position to prevent shifting
+        const minX = 32;
+        const minY = 12;
+        const maxX = Math.max(minX, canvasSize.width - 32 - startVisualWidth);
+        const maxY = Math.max(minY, canvasSize.height - 48 - startVisualHeight);
+        
+        const clampedX = Math.max(minX, Math.min(maxX, card.position.x));
+        const clampedY = Math.max(minY, Math.min(maxY, card.position.y));
+
+        maxScaleX = (canvasSize.width - 32 - clampedX) / cardWidth;
+        maxScaleY = (canvasSize.height - 48 - clampedY) / cardHeight;
       }
       const maxAllowedScale = Math.min(1.0, Math.max(0.5, Math.min(maxScaleX, maxScaleY)));
 
@@ -1563,10 +1575,10 @@ function SandboxContent() {
                 const clampedY = Math.max(minY, Math.min(maxY, card.position.y));
 
                 const cardConstraints = {
-                  left: -Math.max(0, clampedX - minX),
-                  top: -Math.max(0, clampedY - minY),
-                  right: Math.max(0, canvasSize.width - 32 - (clampedX + visualWidth) + unscaledWidth),
-                  bottom: Math.max(0, canvasSize.height - 48 - (clampedY + visualHeight) + unscaledHeight)
+                  left: minX,
+                  top: minY,
+                  right: maxX,
+                  bottom: maxY
                 };
                 return (
                   <motion.div
@@ -1580,11 +1592,13 @@ function SandboxContent() {
                       handleDragEnd(card.id, e, info, clampedX, clampedY);
                       setIsDragging(false);
                     }}
-                    style={{ x: clampedX, y: clampedY, scale: card.scale || 1, originX: 0, originY: 0 }}
-                    className={`absolute left-0 top-0 rounded-[2rem] bg-[#111113]/90 border border-white/10 shadow-2xl backdrop-blur-2xl p-6 select-none overflow-hidden transition-colors ${
-                      card.zoom === 'macro' ? 'w-[320px] h-[220px]' : card.zoom === 'meso' ? 'w-[450px] h-[340px]' : 'w-[750px] h-[480px] z-30'
-                    }`}
+                    style={{ x: clampedX, y: clampedY, width: visualWidth, height: visualHeight, zIndex: card.zoom === 'micro' ? 30 : 10 }}
+                    className="absolute left-0 top-0"
                   >
+                    <motion.div
+                      style={{ scale: currentScale, originX: 0, originY: 0, width: unscaledWidth, height: unscaledHeight }}
+                      className="relative rounded-[2rem] bg-[#111113]/90 border border-white/10 shadow-2xl backdrop-blur-2xl p-6 select-none overflow-hidden transition-colors"
+                    >
                     {/* Background glow according to security level */}
                     {card.zoom === 'micro' && (
                       <div className="absolute -top-20 -right-20 w-44 h-44 bg-indigo-500/5 blur-[50px] rounded-full pointer-events-none" />
@@ -1656,6 +1670,7 @@ function SandboxContent() {
                         <line x1="10" y1="6" x2="6" y2="10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
                       </svg>
                     </div>
+                    </motion.div>
                   </motion.div>
                 );
               })
