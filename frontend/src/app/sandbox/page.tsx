@@ -1692,15 +1692,7 @@ function SandboxContent() {
                       handleDragEnd(card.id, e, info, clampedX, clampedY);
                       setDraggingCardId(null);
                     }}
-                    style={{
-                      zIndex: card.zoom === 'micro' ? 30 : 10,
-                      ...((draggingCardId === card.id || resizingCardId === card.id) ? {
-                        x: clampedX,
-                        y: clampedY,
-                        width: visualWidth,
-                        height: visualHeight
-                      } : {})
-                    }}
+                    style={{ zIndex: card.zoom === 'micro' ? 30 : 10 }}
                     className="absolute left-0 top-0"
                   >
                     <motion.div
@@ -1711,14 +1703,7 @@ function SandboxContent() {
                         width: { type: "tween", ease: "easeOut", duration: 0.3 },
                         height: { type: "tween", ease: "easeOut", duration: 0.3 }
                       }}
-                      style={{
-                        transformOrigin: 'top left',
-                        ...(resizingCardId === card.id ? {
-                          scale: currentScale,
-                          width: unscaledWidth,
-                          height: unscaledHeight
-                        } : {})
-                      }}
+                      style={{ transformOrigin: 'top left' }}
                       className="relative rounded-[2rem] bg-[#111113]/90 border border-white/10 shadow-2xl backdrop-blur-2xl p-6 select-none overflow-hidden transition-colors"
                     >
                     {/* Background glow according to security level */}
