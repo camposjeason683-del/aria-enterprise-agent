@@ -272,6 +272,12 @@ function SandboxContent() {
   const [activeNodeId, setActiveNodeId] = useState<string | null>(null);
   const [dragOffsets, setDragOffsets] = useState<Record<string, { x: number; y: number }>>({});
 
+  // Keep mutable refs of nodes and activeNodeId to prevent stale closures in native DOM event listeners
+  const latestNodesRef = useRef(nodes);
+  latestNodesRef.current = nodes;
+  const latestActiveNodeIdRef = useRef(activeNodeId);
+  latestActiveNodeIdRef.current = activeNodeId;
+
   const [renameBranchId, setRenameBranchId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [securityConfirmation, setSecurityConfirmation] = useState<SecurityConfirmation | null>(null);
@@ -938,83 +944,109 @@ function SandboxContent() {
     }, 50);
   };
 
-  const handleResizeStart = (cardId: string, startEvent: React.PointerEvent) => {
-    if (!activeNodeId) return;
-    const node = nodes[activeNodeId];
+  const handleResizeStart = (cardId: string, startEvent: React.PointerEvent | PointerEvent) => {
+    const currentActiveNodeId = latestActiveNodeIdRef.current;
+    if (!currentActiveNodeId) return;
+    const currentNodes = latestNodesRef.current;
+    const node = currentNodes[currentActiveNodeId];
     if (!node) return;
     const card = node.activeCards[cardId];
     if (!card) return;
-
-    let cardWidth = 320;
-    let cardHeight = 220;
-    if (card.zoom === 'meso') {
-      cardWidth = 450;
-      cardHeight = 340;
-    } else if (card.zoom === 'micro') {
-      cardWidth = 750;
-      cardHeight = 480;
-    }
 
     const startScale = card.scale || 1;
     const startMouseX = startEvent.clientX;
     const startMouseY = startEvent.clientY;
 
+    // Direct DOM manipulation to scale the card smoothly at 120fps
+    const outerEl = document.querySelector(`[data-card-id="${cardId}"][data-role="outer-card"]`) as HTMLElement;
+    const innerEl = outerEl ? (outerEl.querySelector('[data-role="inner-card"]') as HTMLElement) : null;
+
+    // Measure exact physical unscaled dimensions of the card using the DOM
+    const outerRect = outerEl ? outerEl.getBoundingClientRect() : null;
+    const cardWidth = outerRect ? (outerRect.width / startScale) : (card.zoom === 'macro' ? 320 : card.zoom === 'meso' ? 450 : 750);
+    const cardHeight = outerRect ? (outerRect.height / startScale) : (card.zoom === 'macro' ? 220 : card.zoom === 'meso' ? 340 : 480);
+
+    // Calculate boundary constraints at the start of resize using actual DOM measurements
+    const minX = 32;
+    const minY = 12;
+    const container = canvasRef.current;
+    const containerWidth = container ? container.clientWidth : canvasSize.width;
+    const containerHeight = container ? container.clientHeight : canvasSize.height;
+
+    const maxX = Math.max(minX, containerWidth - 32 - cardWidth * startScale);
+    const maxY = Math.max(minY, containerHeight - 48 - cardHeight * startScale);
+    
+    const clampedX = Math.max(minX, Math.min(maxX, card.position.x));
+    const clampedY = Math.max(minY, Math.min(maxY, card.position.y));
+    const maxScaleX = (containerWidth - 32 - clampedX) / cardWidth;
+    const maxScaleY = (containerHeight - 48 - clampedY) / cardHeight;
+    // Ensure the maximum allowed scale is at least startScale, so the card never shrinks down immediately on drag start
+    const rawMaxScale = Math.min(maxScaleX, maxScaleY);
+    const maxAllowedScale = Math.max(startScale, Math.min(1.0, Math.max(0.5, rawMaxScale)));
+
+    let latestScale = startScale;
+
     const handlePointerMove = (moveEvent: PointerEvent) => {
+      // Safety check: if buttons are released (buttons === 0), stop resizing
+      // This protects against missed pointerup events (e.g. during double clicks or selection)
+      if (moveEvent.buttons === 0) {
+        handlePointerUp();
+        return;
+      }
+
+      // Ignore glitched zero coordinate events (often dispatched during HMR or gesture boundaries)
+      if (moveEvent.clientX === 0 && moveEvent.clientY === 0) return;
+
       const deltaX = moveEvent.clientX - startMouseX;
       const deltaY = moveEvent.clientY - startMouseY;
-
-      // Proportional scale change based on relative drag distance
-      const scaleChangeX = deltaX / cardWidth;
-      const scaleChangeY = deltaY / cardHeight;
-      const scaleChange = (scaleChangeX + scaleChangeY) / 2;
-
-      let maxScaleX = 1.0;
-      let maxScaleY = 1.0;
-      if (canvasSize.width > 0 && canvasSize.height > 0) {
-        const startVisualWidth = cardWidth * startScale;
-        const startVisualHeight = cardHeight * startScale;
-        
-        // Calculate the actual rendered (clamped) position to prevent shifting
-        const minX = 32;
-        const minY = 12;
-        const maxX = Math.max(minX, canvasSize.width - 32 - startVisualWidth);
-        const maxY = Math.max(minY, canvasSize.height - 48 - startVisualHeight);
-        
-        const clampedX = Math.max(minX, Math.min(maxX, card.position.x));
-        const clampedY = Math.max(minY, Math.min(maxY, card.position.y));
-
-        maxScaleX = (canvasSize.width - 32 - clampedX) / cardWidth;
-        maxScaleY = (canvasSize.height - 48 - clampedY) / cardHeight;
+      
+      const abs_dx = Math.abs(deltaX);
+      const abs_dy = Math.abs(deltaY);
+      
+      let scaleChange = 0;
+      if (abs_dx + abs_dy > 0) {
+        scaleChange = ((deltaX * abs_dx / cardWidth) + (deltaY * abs_dy / cardHeight)) / (abs_dx + abs_dy);
       }
-      const maxAllowedScale = Math.min(1.0, Math.max(0.5, Math.min(maxScaleX, maxScaleY)));
-
+      
       let newScale = startScale + scaleChange;
       newScale = Math.max(0.5, Math.min(maxAllowedScale, newScale));
+      latestScale = newScale;
 
-      setNodes(prev => {
-        const activeNode = prev[activeNodeId];
-        if (!activeNode) return prev;
-        const currentCard = activeNode.activeCards[cardId];
-        if (!currentCard) return prev;
-        return {
-          ...prev,
-          [activeNodeId]: {
-            ...activeNode,
-            activeCards: {
-              ...activeNode.activeCards,
-              [cardId]: {
-                ...currentCard,
-                scale: newScale
-              }
-            }
-          }
-        };
-      });
+      // Update the DOM elements directly
+      if (outerEl && innerEl) {
+        outerEl.style.width = `${cardWidth * newScale}px`;
+        outerEl.style.height = `${cardHeight * newScale}px`;
+        innerEl.style.scale = String(newScale);
+        innerEl.style.transform = 'none'; // Avoid scale duplication (scale and transform: scale() compounding)
+      }
     };
 
     const handlePointerUp = () => {
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);
+
+      // Only trigger React state update and re-render if the scale actually changed
+      if (Math.abs(latestScale - startScale) > 0.001) {
+        setNodes(prev => {
+          const activeNode = prev[activeNodeId];
+          if (!activeNode) return prev;
+          const currentCard = activeNode.activeCards[cardId];
+          if (!currentCard) return prev;
+          return {
+            ...prev,
+            [activeNodeId]: {
+              ...activeNode,
+              activeCards: {
+                ...activeNode.activeCards,
+                [cardId]: {
+                  ...currentCard,
+                  scale: latestScale
+                }
+              }
+            }
+          };
+        });
+      }
     };
 
     window.addEventListener('pointermove', handlePointerMove);
@@ -1583,6 +1615,8 @@ function SandboxContent() {
                 return (
                   <motion.div
                     key={card.id}
+                    data-card-id={card.id}
+                    data-role="outer-card"
                     drag
                     dragMomentum={false}
                     dragConstraints={cardConstraints}
@@ -1596,7 +1630,8 @@ function SandboxContent() {
                     className="absolute left-0 top-0"
                   >
                     <motion.div
-                      style={{ scale: currentScale, originX: 0, originY: 0, width: unscaledWidth, height: unscaledHeight }}
+                      data-role="inner-card"
+                      style={{ scale: currentScale, transformOrigin: 'top left', width: unscaledWidth, height: unscaledHeight }}
                       className="relative rounded-[2rem] bg-[#111113]/90 border border-white/10 shadow-2xl backdrop-blur-2xl p-6 select-none overflow-hidden transition-colors"
                     >
                     {/* Background glow according to security level */}
@@ -1659,9 +1694,20 @@ function SandboxContent() {
                     {/* Proportional Resize Handle */}
                     <div
                       className="absolute bottom-3 right-3 w-4 h-4 cursor-se-resize z-50 flex items-center justify-center opacity-30 hover:opacity-100 hover:scale-110 active:scale-95 transition-all"
-                      onPointerDown={(e) => {
-                        e.stopPropagation();
-                        handleResizeStart(card.id, e);
+                      ref={(el) => {
+                        if (el) {
+                          if ((el as any).__listenersAttached) return;
+                          (el as any).__listenersAttached = true;
+                          
+                          const stopNative = (e: Event) => e.stopPropagation();
+                          const startResize = (e: PointerEvent) => {
+                            e.stopPropagation();
+                            handleResizeStart(card.id, e);
+                          };
+                          el.addEventListener('pointerdown', startResize as EventListener);
+                          el.addEventListener('mousedown', stopNative as EventListener);
+                          el.addEventListener('touchstart', stopNative as EventListener);
+                        }
                       }}
                       title="Arrastrar para redimensionar (50% - 100%)"
                     >
