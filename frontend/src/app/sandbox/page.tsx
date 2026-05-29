@@ -1009,7 +1009,7 @@ function SandboxContent() {
     window.addEventListener('pointerup', handlePointerUp);
   };
 
-  const handleDragEnd = (cardId: string, event: any, info: any) => {
+  const handleDragEnd = (cardId: string, event: any, info: any, startX?: number, startY?: number) => {
     if (!activeNodeId) return;
     const container = canvasRef.current;
     if (!container) return;
@@ -1036,8 +1036,10 @@ function SandboxContent() {
       const visualWidth = cardWidth * currentScale;
       const visualHeight = cardHeight * currentScale;
 
-      let newX = card.position.x + info.offset.x;
-      let newY = card.position.y + info.offset.y;
+      const baseX = startX !== undefined ? startX : card.position.x;
+      const baseY = startY !== undefined ? startY : card.position.y;
+      let newX = baseX + info.offset.x;
+      let newY = baseY + info.offset.y;
 
       const minX = 32;
       const minY = 12;
@@ -1552,11 +1554,19 @@ function SandboxContent() {
                 const visualWidth = unscaledWidth * currentScale;
                 const visualHeight = unscaledHeight * currentScale;
 
+                // Dynamically clamp coordinates during render to force alignment and keep cards in-bounds
+                const minX = 32;
+                const minY = 12;
+                const maxX = Math.max(minX, canvasSize.width - 32 - visualWidth);
+                const maxY = Math.max(minY, canvasSize.height - 48 - visualHeight);
+                const clampedX = Math.max(minX, Math.min(maxX, card.position.x));
+                const clampedY = Math.max(minY, Math.min(maxY, card.position.y));
+
                 const cardConstraints = {
-                  left: -Math.max(0, card.position.x - 32),
-                  top: -Math.max(0, card.position.y - 12),
-                  right: Math.max(0, canvasSize.width - 32 - (card.position.x + visualWidth) + unscaledWidth),
-                  bottom: Math.max(0, canvasSize.height - 48 - (card.position.y + visualHeight) + unscaledHeight)
+                  left: -Math.max(0, clampedX - minX),
+                  top: -Math.max(0, clampedY - minY),
+                  right: Math.max(0, canvasSize.width - 32 - (clampedX + visualWidth) + unscaledWidth),
+                  bottom: Math.max(0, canvasSize.height - 48 - (clampedY + visualHeight) + unscaledHeight)
                 };
                 return (
                   <motion.div
@@ -1567,10 +1577,10 @@ function SandboxContent() {
                     dragElastic={0.05}
                     onDragStart={() => setIsDragging(true)}
                     onDragEnd={(e, info) => {
-                      handleDragEnd(card.id, e, info);
+                      handleDragEnd(card.id, e, info, clampedX, clampedY);
                       setIsDragging(false);
                     }}
-                    style={{ x: card.position.x, y: card.position.y, scale: card.scale || 1, transformOrigin: 'top left' }}
+                    style={{ x: clampedX, y: clampedY, scale: card.scale || 1, originX: 0, originY: 0 }}
                     className={`absolute left-0 top-0 rounded-[2rem] bg-[#111113]/90 border border-white/10 shadow-2xl backdrop-blur-2xl p-6 select-none overflow-hidden transition-colors ${
                       card.zoom === 'macro' ? 'w-[320px] h-[220px]' : card.zoom === 'meso' ? 'w-[450px] h-[340px]' : 'w-[750px] h-[480px] z-30'
                     }`}
