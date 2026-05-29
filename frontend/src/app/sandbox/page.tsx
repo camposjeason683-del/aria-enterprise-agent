@@ -1694,11 +1694,17 @@ function SandboxContent() {
                     animate={{
                       scale: 1,
                       opacity: 1,
+                      // Si NO estamos arrastrando ni redimensionando, delegamos el control de (x, y) a Framer.
+                      // Esto permite la interpolación al viajar en la línea temporal.
                       ...((draggingCardId !== card.id && resizingCardId !== card.id) ? { x: clampedX, y: clampedY } : {}),
+                      // Si NO estamos redimensionando, delegamos el tamaño a Framer.
                       ...(resizingCardId !== card.id ? { width: visualWidth, height: visualHeight } : {})
                     }}
                     exit={{ opacity: 0, scale: 0.8 }}
                     transition={{
+                      // CONTROL DINÁMICO DE TRANSICIONES:
+                      // - Si `shouldAnimateLayout` es true (viaje en el tiempo), dura 0.4s (movimiento cinemático).
+                      // - Si es false (arrastre manual con el mouse), dura 0s (instantáneo, para no sentir input lag).
                       x: shouldAnimateLayout ? { type: "tween", ease: "easeOut", duration: 0.4 } : { duration: 0 },
                       y: shouldAnimateLayout ? { type: "tween", ease: "easeOut", duration: 0.4 } : { duration: 0 },
                       width: { type: "tween", ease: "easeOut", duration: 0.3 },
@@ -1708,18 +1714,25 @@ function SandboxContent() {
                     }}
                     data-card-id={card.id}
                     data-role="outer-card"
+                    // FÍSICA DE ARRASTRE
                     drag
-                    dragMomentum={false}
-                    dragConstraints={cardConstraints}
-                    dragElastic={0.05}
+                    dragMomentum={false} // Desactiva la inercia para que la tarjeta no "resbale" al soltarla
+                    dragConstraints={cardConstraints} // Evita que la tarjeta se salga del canvas visible
+                    dragElastic={0.05} // Pequeña resistencia de rebote al chocar con los bordes
                     onDragStart={() => {
+                      // Al arrastrar, desactivamos las transiciones suaves (0.4s) para que siga al cursor instantáneamente.
                       setShouldAnimateLayout(false);
                       setDraggingCardId(card.id);
                     }}
                     onDragEnd={(e, info) => {
+                      // Al soltar, disparamos la actualización del estado y el nodo en la línea de tiempo.
                       handleDragEnd(card.id, e, info, clampedX, clampedY);
                       setDraggingCardId(null);
                     }}
+                    // WARNING (Known Issue): Aquí se encuentra el fallo documentado. 
+                    // Tener x, y, width, height forzados en `style` pisa el cálculo de interpolación
+                    // del FLIP de Framer Motion, causando saltos/teletransportes al animarse.
+                    // Para la Fase 2, se removerán de aquí para dejar solo el zIndex.
                     style={{ x: clampedX, y: clampedY, width: visualWidth, height: visualHeight, zIndex: card.zoom === 'micro' ? 30 : 10 }}
                     className="absolute left-0 top-0"
                   >
