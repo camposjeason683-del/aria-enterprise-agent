@@ -25,6 +25,7 @@ from src.infra.logger import log_error, log_info  # noqa: E402
 from src.infra.rate_limiter import check_rate_limit, rate_limiter  # noqa: E402
 from src.infra.session_insforge import InsForgeSessionService  # noqa: E402
 from src.infra.tenant_context import TenantContext  # noqa: E402
+from src.infra.tenants import resolve_tenant_tier  # noqa: E402
 
 
 # ─── Lifecycle ───────────────────────────────────────────────────────
@@ -142,8 +143,8 @@ async def chat(
         raise HTTPException(503, "ARIA está desactivada por el administrador.")
 
     # 2. Rate limit (per tenant+user, by subscription tier; shared counter)
-    # TODO(tier): resolve the real tier from tenants.subscription_tier.
-    rate = await check_rate_limit(tenant.tenant_id, user_id, "free")
+    tier = await resolve_tenant_tier(tenant.tenant_id)
+    rate = await check_rate_limit(tenant.tenant_id, user_id, tier)
     if not rate.allowed:
         raise HTTPException(429, "Límite de solicitudes excedido para tu plan.")
 
