@@ -20,7 +20,7 @@ export default function LoginPage() {
     try {
       if (mode === "up") await signUp(e, p);
       else await signIn(e, p);
-      router.push("/app");
+      router.push("/sandbox");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Error");
       setBusy(false);
@@ -69,7 +69,19 @@ export default function LoginPage() {
 
         <button
           disabled={busy}
-          onClick={() => go(DEMO.email, DEMO.password)}
+          onClick={async () => {
+            // Demo ALWAYS signs in (the demo user already exists), regardless of
+            // whether the form is in sign-in or sign-up mode.
+            setBusy(true);
+            setError("");
+            try {
+              await signIn(DEMO.email, DEMO.password);
+              router.push("/sandbox");
+            } catch (err) {
+              setError(err instanceof Error ? err.message : "Error");
+              setBusy(false);
+            }
+          }}
           className="mt-3 w-full rounded-xl border border-white/15 hover:bg-white/5 px-4 py-2.5 text-sm transition-colors disabled:opacity-50"
         >
           ✨ Entrar como demo

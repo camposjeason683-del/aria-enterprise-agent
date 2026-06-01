@@ -55,6 +55,54 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+class _CopilotKitTenantMiddleware:
+    """Pure-ASGI middleware: for the CopilotKit agent path (which is mounted by
+    ag_ui_adk and has no FastAPI dependency to run require_tenant), verify the
+    forwarded JWT and seed the tenant contextvar in the SAME task as the endpoint
+    so the agent's tools stay RLS-scoped. Must be pure-ASGI (not BaseHTTPMiddleware)
+    so the contextvar propagates to the handler."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http" and scope.get("path", "").startswith(
+            "/api/v1/copilotkit"
+        ):
+            auth = ""
+            for k, v in scope.get("headers", []):
+                if k == b"authorization":
+                    auth = v.decode()
+                    break
+            if auth.startswith("Bearer "):
+                try:
+                    from src.infra.auth import (
+                        resolve_tenant_membership,
+                        verify_insforge_jwt,
+                    )
+                    from src.infra.tenant_context import TenantContext, set_current
+
+                    token = auth.removeprefix("Bearer ").strip()
+                    claims = verify_insforge_jwt(token)
+                    uid = claims.get("sub")
+                    if uid:
+                        m = await resolve_tenant_membership(uid)
+                        set_current(
+                            TenantContext(
+                                user_id=uid,
+                                tenant_id=m["tenant_id"],
+                                role=m["role"],
+                                jwt=token,
+                            )
+                        )
+                except Exception as exc:
+                    log_error("CopilotKit tenant middleware: auth failed", error=str(exc))
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(_CopilotKitTenantMiddleware)
+
 # ─── ADK Runner ──────────────────────────────────────────────────────
 root_agent = build_root_agent()
 # Durable, multi-instance session storage (write-through to InsForge).

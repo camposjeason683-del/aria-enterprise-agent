@@ -19,6 +19,9 @@ function store(accessToken: string, refreshToken?: string) {
   if (typeof window === "undefined") return;
   localStorage.setItem(TOKEN_KEY, accessToken);
   if (refreshToken) localStorage.setItem(REFRESH_KEY, refreshToken);
+  // Also a cookie, so same-origin requests to /api/copilotkit carry the JWT
+  // (CopilotKit's runtime proxy forwards it to the backend).
+  document.cookie = `${TOKEN_KEY}=${accessToken}; path=/; max-age=900; samesite=lax`;
 }
 
 export function getToken(): string | null {
@@ -35,6 +38,7 @@ export function signOut() {
   if (typeof window === "undefined") return;
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(REFRESH_KEY);
+  document.cookie = `${TOKEN_KEY}=; path=/; max-age=0`;
 }
 
 async function authRequest(path: string, body: object): Promise<AuthUser> {
