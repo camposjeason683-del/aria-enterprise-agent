@@ -40,7 +40,11 @@ export function SmartWrapper(props: SmartWrapperProps) {
       key={props.cardId}
       data-card-id={props.cardId}
       data-role="outer-card"
-      initial={{ opacity: 0, scale: 0.8, x: props.clampedX, y: props.clampedY }}
+      // initial={false}: render directly in the animate state (no from-0 enter
+      // animation). This keeps cards visible even if the entrance animation can't
+      // run (e.g. a background tab where requestAnimationFrame is throttled),
+      // while position/size still animate on interaction (drag, zoom, timeline).
+      initial={false}
       animate={animate}
       exit={{ opacity: 0, scale: 0.8 }}
       transition={transition}
