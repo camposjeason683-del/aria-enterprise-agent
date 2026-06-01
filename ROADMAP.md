@@ -18,11 +18,20 @@
 - ✅ Migraciones M1–M5, las 9 specs, y arreglos: `ag-ui-adk` faltante en deps
   (el backend no booteaba) + import roto en `tests/test_tools.py`.
 
-**Pendiente — batch final con credenciales / preview (Fase 0 + integración):**
-- ⛔ Crear proyecto InsForge de ARIA-OS + aplicar migraciones + smoke test EN VIVO
-  del endpoint y del **gate de aislamiento 2-tenants** (`tests/tenancy`, corre con
-  `ARIA_LIVE_TESTS=1`).
-- 🔲 S9 frontend: `lib/insforge.ts` + swap `localStorage`→`canvas_workspaces`.
+**✅ Verificado EN VIVO contra el proyecto `aria-os` (`y4bu5qnj.us-east`):**
+- Proyecto InsForge creado + linkeado; **migraciones M1–M5 aplicadas**
+  (`scripts/apply_migrations.py`).
+- Adapter S1 + RPC `exec_safe_read` funcionando contra aria-os.
+- 🔒 **GATE DE AISLAMIENTO 2-TENANTS PASÓ** (`scripts/verify_isolation.py`): con
+  el JWT de A, ni la tool, ni el SQL crudo sin filtro, ni el `COUNT(*)` ven datos
+  de B. La invariante cardinal de seguridad está probada con RLS real.
+- S4 (sesión persiste + hidrata) y S5 (rate limit contador compartido) en vivo
+  (`scripts/smoke_live.py`).
+
+**Pendiente — integración frontend + Gemini (preview / key):**
+- 🔲 Chat end-to-end: rellenar `GEMINI_API_KEY` en `.env` (auth/rate-limit/sesión/
+  datos ya verificados; falta solo el razonamiento del LLM).
+- 🔲 S9 frontend: swap `localStorage`→`canvas_workspaces` (el lib ya existe).
 - 🔲 S7 integración: swap del `motion.div` por `SmartWrapper` en `sandbox/page.tsx`
   + verificación visual del FLIP.
 - 🔲 UI de login (admin/empleado) con `@insforge/sdk` + panel de Ajustes.
