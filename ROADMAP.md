@@ -5,6 +5,30 @@
 > (`pendiente_fase2.md` y `saas_packaging_plan.md`, eliminados). Última
 > actualización: 2026-06-01.
 
+## Estado de implementación (rama `feat/insforge-saas-foundation`)
+
+**Hecho y testeado (45 tests backend + 5 frontend en verde; `tsc` 0 errores):**
+- ✅ S1 adapter InsForge · S2 auth tenant · S4 session persistente · S5 rate limit
+  por tenant · S8 canvas tools · S6 (cifrado + save/load de credenciales) ·
+  S7 (componentes `SmartWrapper`/`ContentRenderer`/`cardMotion` con fix FLIP).
+- ✅ **Cutover backend**: `db.py` → cliente tenant-scoped (las ~50 tools sin
+  cambios), `main.py` con auth + rate limit + sesión InsForge + seed de state,
+  `execute_safe_read_query` vía RPC `exec_safe_read`. Smoke test del gate de auth
+  (TestClient).
+- ✅ Migraciones M1–M5, las 9 specs, y arreglos: `ag-ui-adk` faltante en deps
+  (el backend no booteaba) + import roto en `tests/test_tools.py`.
+
+**Pendiente — batch final con credenciales / preview (Fase 0 + integración):**
+- ⛔ Crear proyecto InsForge de ARIA-OS + aplicar migraciones + smoke test EN VIVO
+  del endpoint y del **gate de aislamiento 2-tenants** (`tests/tenancy`, corre con
+  `ARIA_LIVE_TESTS=1`).
+- 🔲 S9 frontend: `lib/insforge.ts` + swap `localStorage`→`canvas_workspaces`.
+- 🔲 S7 integración: swap del `motion.div` por `SmartWrapper` en `sandbox/page.tsx`
+  + verificación visual del FLIP.
+- 🔲 UI de login (admin/empleado) con `@insforge/sdk` + panel de Ajustes.
+- 🔲 Loop por-tenant de los crons (`/api/v1/cron/*` hoy devuelven 501) + sync
+  WooCommerce real + migración de storage de artefactos.
+
 ## Context
 
 ARIA-OS (Google ADK 2.1 + FastAPI + Next.js/CopilotKit) es un agente "COO virtual" **monousuario codeado para Supabase**. Se migra a **InsForge** (BaaS real del usuario, donde ya corre su app "Cinco"), se vuelve **SaaS para ~10 empresas × ~20 empleados (~200 usuarios, pico 10–30 req)** y se le da al agente "manos" sobre el canvas (**Fase 2 Estado Pasivo**).
