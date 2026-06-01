@@ -74,6 +74,17 @@ from src.tools.dynamic_execution import (
 )
 from src.tools.ham_memory import manage_ham_memory
 from src.tools.skills_loader import load_dynamic_skills
+from src.tools.canvas import (
+    manage_canvas_widgets,
+    create_timeline_branch,
+    execute_business_action,
+)
+
+# Canvas (Fase 2): every node can draw/update cards on the user's canvas
+# (Estado Pasivo); branching and real-world actions are reserved for the
+# orchestrator nodes.
+_CANVAS_TOOLS: List[Callable] = [manage_canvas_widgets]
+_ADVANCED_CANVAS_TOOLS: List[Callable] = [create_timeline_branch, execute_business_action]
 
 # Repo root resolved relative to this file (src/graph/ -> ../.. = repo root),
 # so the skills/ directory is found cross-platform (macOS, Linux/Cloud Run).
@@ -196,6 +207,11 @@ def get_tools_for_node(node_name: str, include_dynamic: bool = True) -> List[Cal
         List of callable tools ready to be passed to an LlmAgent.
     """
     base = _NODE_TOOLS.get(node_name, []).copy()
+    # Every routing node gets the canvas widget tool (Estado Pasivo); the
+    # orchestrators also get timeline branching + business actions.
+    base += _CANVAS_TOOLS
+    if node_name in ("strategic", "coordinator"):
+        base += _ADVANCED_CANVAS_TOOLS
     if include_dynamic and node_name not in ("coordinator",):
         base += _get_dynamic_skills()
     return base
