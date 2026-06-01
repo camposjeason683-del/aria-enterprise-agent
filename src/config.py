@@ -156,12 +156,23 @@ def get_fallback_model(model_name: str) -> BaseLlm:
     fallback_chain = ["gemini-2.5-flash", "gemini-2.0-flash"]
     return FallbackGemini(model=model_name, api_keys=keys, models=fallback_chain)
 
-# gemini-3.5-flash: GA desde Google I/O 19-may-2026.
-# Supera gemini-3.1-pro en benchmarks agenticos y coding.
-# 1M token context window, 65K max output tokens.
-MODEL_FAST = get_fallback_model("gemini-3.5-flash")
-MODEL_DEEP = get_fallback_model("gemini-3.5-flash")
-MODEL_LITE = get_fallback_model("gemini-3.5-flash")  # alias para contextos de bajo costo
+def _build_model(default_gemini: str) -> BaseLlm:
+    """Prefer InsForge AI (OpenRouter: Claude/GPT/...) — reliable capacity, no
+    Gemini free-tier quota. Falls back to Gemini-direct if InsForge isn't set."""
+    from dotenv import load_dotenv
+
+    load_dotenv()
+    if os.environ.get("INSFORGE_URL") and os.environ.get("INSFORGE_API_KEY"):
+        from src.infra.insforge_llm import InsForgeLLM
+
+        model_id = os.environ.get("INSFORGE_AI_MODEL", "openai/gpt-4o-mini")
+        return InsForgeLLM(model=model_id)
+    return get_fallback_model(default_gemini)
+
+
+MODEL_FAST = _build_model("gemini-3.5-flash")
+MODEL_DEEP = _build_model("gemini-3.5-flash")
+MODEL_LITE = _build_model("gemini-3.5-flash")  # alias para contextos de bajo costo
 
 # ─── App Constants ──────────────────────────────────────────────────
 APP_NAME = "agents"

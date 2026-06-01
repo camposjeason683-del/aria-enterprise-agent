@@ -30,10 +30,17 @@ function buildHandler(token?: string) {
   }).handleRequest;
 }
 
+function tokenFrom(req: NextRequest): string | undefined {
+  // CopilotKit forwards the Authorization header (set in <CopilotKit headers>);
+  // fall back to the aria_token cookie.
+  const header = req.headers.get("authorization");
+  if (header?.toLowerCase().startsWith("bearer ")) return header.slice(7).trim();
+  return req.cookies.get("aria_token")?.value;
+}
+
 export const POST = async (req: NextRequest) => {
   try {
-    const token = req.cookies.get("aria_token")?.value;
-    return await buildHandler(token)(req);
+    return await buildHandler(tokenFrom(req))(req);
   } catch (error: unknown) {
     console.error("[copilotkit]", error);
     return NextResponse.json(
@@ -62,7 +69,7 @@ export const GET = async (req: NextRequest) => {
 
   // Delegate other GETs (like SSE streams if any) to CopilotKit
   try {
-    return await buildHandler(req.cookies.get("aria_token")?.value)(req);
+    return await buildHandler(tokenFrom(req))(req);
   } catch (error: unknown) {
     console.error("[copilotkit GET]", error);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });

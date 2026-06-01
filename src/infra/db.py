@@ -19,8 +19,40 @@ to restore it.
 """
 from __future__ import annotations
 
+import os
+import time
+
+import httpx
+
 from src.infra.insforge import InsForgeClient, close_http, get_admin_client, get_tenant_client
+from src.infra.tenant_context import current as _current_ctx
 from src.infra.tenant_context import current_jwt
+
+# Demo-tenant fallback for the CopilotKit / sandbox path. That path auto-signs-in
+# as the demo tenant, but its JWT does not reach the tools via the request
+# contextvar (ag_ui_adk mounts the endpoint outside the app middleware), so the
+# data layer falls back to a cached demo session there. The proper /api/v1/chat
+# path always has a tenant context and never hits this fallback.
+_DEMO_EMAIL = "demo@aria.os"
+_DEMO_PW = "AriaDemo2026!"
+_demo_cache: dict = {"jwt": None, "exp": 0.0}
+
+
+async def _demo_jwt() -> str:
+    now = time.time()
+    if _demo_cache["jwt"] and _demo_cache["exp"] > now + 30:
+        return _demo_cache["jwt"]
+    url = os.environ["INSFORGE_URL"].rstrip("/")
+    async with httpx.AsyncClient(timeout=20.0) as http:
+        r = await http.post(
+            f"{url}/api/auth/sessions?client_type=server",
+            json={"email": _DEMO_EMAIL, "password": _DEMO_PW},
+        )
+    r.raise_for_status()
+    token = r.json()["accessToken"]
+    _demo_cache["jwt"] = token
+    _demo_cache["exp"] = now + 800
+    return token
 
 
 async def get_supabase() -> InsForgeClient:
@@ -28,9 +60,12 @@ async def get_supabase() -> InsForgeClient:
 
     Compatibility name for the tools: the fluent API matches the old client, so
     `client = await get_supabase()` + `client.table(...)...execute()` is unchanged.
-    Raises if called outside a tenant request context (no implicit global access).
+    Falls back to the demo tenant only when there's no tenant context in scope
+    (the CopilotKit/sandbox path); the chat path always has one.
     """
-    return get_tenant_client(current_jwt())
+    if _current_ctx() is not None:
+        return get_tenant_client(current_jwt())
+    return get_tenant_client(await _demo_jwt())
 
 
 def get_system_client() -> InsForgeClient:

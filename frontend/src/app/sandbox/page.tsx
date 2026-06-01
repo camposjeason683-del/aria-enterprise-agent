@@ -2,6 +2,7 @@
 
 import React, { useState, useRef, useEffect, useMemo } from "react";
 import { CopilotKit, useCopilotChatInternal } from "@copilotkit/react-core";
+import { getToken } from "@/lib/auth";
 import { motion, AnimatePresence, LayoutGroup } from "motion/react";
 import {
   Zap,
@@ -217,7 +218,13 @@ const INITIAL_BRANCHES: TimelineBranch[] = [
 
 export default function SandboxPage() {
   return (
-    <CopilotKit runtimeUrl="/api/copilotkit">
+    <CopilotKit
+      runtimeUrl="/api/copilotkit"
+      headers={(): Record<string, string> => {
+        const t = getToken();
+        return t ? { Authorization: `Bearer ${t}` } : {};
+      }}
+    >
       <SandboxContent />
     </CopilotKit>
   );
@@ -1836,6 +1843,26 @@ function SandboxContent() {
       {/* -- BOTTOM INPUT BAR -- */}
       <div className="absolute bottom-8 w-full px-4 z-40 pointer-events-none flex justify-center">
         <div className="w-full max-w-3xl pointer-events-auto">
+          {/* -- AGENT RESPONSE PANEL (texto de ARIA; las cards van al canvas) -- */}
+          {(() => {
+            const lastAssistant = [...messages].reverse().find(
+              (m: any) => m.role === "assistant" && (m.content ?? "").trim()
+            );
+            const responseText = ((lastAssistant?.content as string) ?? "")
+              .replace(/<create_card[\s\S]*?<\/create_card>/g, "")
+              .replace(/<update_card[\s\S]*?<\/update_card>/g, "")
+              .replace(/<delete_card[^>]*\/>/g, "")
+              .trim();
+            if (!isLoading && !responseText) return null;
+            return (
+              <div className="mb-3 max-h-52 overflow-y-auto rounded-[1.75rem] border border-white/10 bg-[#111113]/90 backdrop-blur-3xl p-4 shadow-[0_20px_50px_rgba(0,0,0,0.5)] text-sm leading-relaxed text-white/85 whitespace-pre-wrap">
+                <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-indigo-400/70">
+                  ✦ ARIA
+                </div>
+                {responseText || <span className="text-white/40">Pensando…</span>}
+              </div>
+            );
+          })()}
           <form onSubmit={handleSubmit} className="relative flex items-center group">
             {/* Glowing magic ambient */}
             <div className="absolute inset-0 bg-gradient-to-r from-indigo-500/10 to-purple-500/10 blur-xl opacity-0 group-hover:opacity-100 transition-opacity rounded-[2rem]" />
