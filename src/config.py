@@ -13,7 +13,10 @@ class FallbackGemini(BaseLlm):
     model: str
     api_keys: List[str]
     current_idx: int = 0
-    
+    # Fallback model chain: on 503/UNAVAILABLE ("high demand") the primary model
+    # is skipped and the next model in this list is tried (resilience).
+    models: List[str] = []
+
     async def generate_content_async(self, llm_request, stream=False):
         import logging
         import asyncio
@@ -24,106 +27,113 @@ class FallbackGemini(BaseLlm):
         last_error = None
         num_keys = len(self.api_keys)
         max_cycles = 5  # Allow up to 5 complete cycles of the key pool
-        
-        for cycle in range(max_cycles):
-            start_idx = self.current_idx
-            for i in range(num_keys):
-                # Round-robin key selection starting from start_idx
-                idx = (start_idx + i) % num_keys
-                api_key = self.api_keys[idx]
-                
-                # If there are multiple keys, do NOT retry on the same key when hitting 429
-                max_retries = 2 if num_keys == 1 else 0
-                initial_delay = 2.0
-                backoff_factor = 2.0
-                
-                for attempt in range(max_retries + 1):
-                    try:
-                        client = Client(api_key=api_key)
-                        model_inst = Gemini(model=self.model)
-                        model_inst.__dict__['api_client'] = client
-                        model_inst.__dict__['_live_api_client'] = client
-                        
-                        generator = model_inst.generate_content_async(llm_request, stream=stream)
+
+        # Model fallback chain: primary first, then alternates (dedup, keep order).
+        model_chain: List[str] = []
+        for m in [self.model, *self.models]:
+            if m and m not in model_chain:
+                model_chain.append(m)
+
+        for current_model in model_chain:
+            unavailable = False  # set when the model is overloaded (503) → try next model
+            for cycle in range(max_cycles):
+                start_idx = self.current_idx
+                for i in range(num_keys):
+                    # Round-robin key selection starting from start_idx
+                    idx = (start_idx + i) % num_keys
+                    api_key = self.api_keys[idx]
+
+                    # If there are multiple keys, do NOT retry on the same key when hitting 429
+                    max_retries = 2 if num_keys == 1 else 0
+                    initial_delay = 2.0
+                    backoff_factor = 2.0
+
+                    for attempt in range(max_retries + 1):
                         try:
-                            first_event = await generator.__anext__()
-                            has_first = True
-                        except StopAsyncIteration:
-                            has_first = False
-                            
-                        if has_first:
-                            # Successful request! Rotate current_idx to the next key to balance future load
-                            self.current_idx = (idx + 1) % num_keys
-                            yield first_event
+                            client = Client(api_key=api_key)
+                            model_inst = Gemini(model=current_model)
+                            model_inst.__dict__['api_client'] = client
+                            model_inst.__dict__['_live_api_client'] = client
+
+                            generator = model_inst.generate_content_async(llm_request, stream=stream)
                             try:
-                                async for event in generator:
-                                    yield event
-                            except Exception as e:
-                                logging.error(f"FallbackGemini: Error mid-stream: {e}")
-                                raise e
-                            return
-                    except Exception as e:
-                        err_str = str(e)
-                        err_type = type(e).__name__
-                        
-                        # Detect key-specific errors (rate limits, permission denied, quota exceeded, invalid key)
-                        is_rate_limit = "429" in err_str or "ResourceExhausted" in err_type or "Quota exceeded" in err_str
-                        is_perm_denied = "403" in err_str or "PERMISSION_DENIED" in err_str or "denied" in err_str.lower() or "invalid" in err_str.lower()
-                        is_fallback_error = is_rate_limit or is_perm_denied
-                        
-                        if is_fallback_error:
-                            last_error = e
-                            if num_keys > 1:
-                                # Rotate current_idx to the next key immediately to skip this key next time
+                                first_event = await generator.__anext__()
+                                has_first = True
+                            except StopAsyncIteration:
+                                has_first = False
+
+                            if has_first:
+                                # Success! Rotate current_idx to the next key to balance future load
                                 self.current_idx = (idx + 1) % num_keys
+                                yield first_event
+                                try:
+                                    async for event in generator:
+                                        yield event
+                                except Exception as e:
+                                    logging.error(f"FallbackGemini: Error mid-stream: {e}")
+                                    raise e
+                                return
+                        except Exception as e:
+                            err_str = str(e)
+                            err_type = type(e).__name__
+
+                            is_rate_limit = "429" in err_str or "ResourceExhausted" in err_type or "Quota exceeded" in err_str
+                            is_perm_denied = "403" in err_str or "PERMISSION_DENIED" in err_str or "denied" in err_str.lower() or "invalid" in err_str.lower()
+                            # Model overloaded → skip the rest of this model, fall back to next model.
+                            is_unavailable = "503" in err_str or "UNAVAILABLE" in err_str or "overloaded" in err_str.lower() or "high demand" in err_str.lower()
+
+                            if is_unavailable:
+                                last_error = e
+                                unavailable = True
                                 logging.warning(
-                                    f"FallbackGemini: API Key {idx+1} failed with key/quota error: {err_str[:120]}. "
-                                    f"Instantly falling back to next key without delay."
+                                    f"FallbackGemini: model '{current_model}' returned 503/UNAVAILABLE. "
+                                    f"Falling back to the next model in the chain."
                                 )
-                                break  # Break attempt loop to go to next key in i loop
-                            
-                            # If we only have 1 key and it's a rate limit, we can retry with delay
-                            if is_rate_limit and attempt < max_retries:
-                                # Try to extract suggested wait time from error message
-                                match = re.search(r"Please retry in ([\d\.]+)s", err_str)
-                                if match:
-                                    delay = float(match.group(1)) + 0.5
+                                break  # attempt loop
+
+                            if is_rate_limit or is_perm_denied:
+                                last_error = e
+                                if num_keys > 1:
+                                    self.current_idx = (idx + 1) % num_keys
                                     logging.warning(
-                                        f"FallbackGemini: API Key {idx+1} hit 429. Cycle {cycle+1}/{max_cycles}, attempt {attempt+1}. "
-                                        f"Sleeping {delay:.2f}s as requested by Google..."
+                                        f"FallbackGemini: API Key {idx+1} key/quota error: {err_str[:120]}. Next key."
                                     )
-                                else:
-                                    delay = initial_delay * (backoff_factor ** attempt)
+                                    break
+                                if is_rate_limit and attempt < max_retries:
+                                    match = re.search(r"Please retry in ([\d\.]+)s", err_str)
+                                    delay = (float(match.group(1)) + 0.5) if match else initial_delay * (backoff_factor ** attempt)
                                     logging.warning(
-                                        f"FallbackGemini: API Key {idx+1} hit 429 on attempt {attempt+1}. "
-                                        f"Retrying in {delay}s..."
+                                        f"FallbackGemini: 429 on key {idx+1} (model {current_model}), retrying in {delay:.2f}s..."
                                     )
-                                await asyncio.sleep(delay)
-                                continue
-                            else:
+                                    await asyncio.sleep(delay)
+                                    continue
                                 logging.warning(
-                                    f"FallbackGemini: API Key {idx+1} rate limit/permission exhausted. Trying next key."
+                                    f"FallbackGemini: key {idx+1} rate limit/permission exhausted. Trying next key."
                                 )
                                 break
-                        else:
+                            # Any other error → propagate immediately.
                             raise e
-            
-            # If we completed a cycle and tried all keys, and none of them succeeded, sleep before next cycle
-            if cycle < max_cycles - 1:
-                # Check if we can parse a delay from the last error to wait exactly that long
-                sleep_time = 5.0
-                if last_error:
-                    match = re.search(r"Please retry in ([\d\.]+)s", str(last_error))
-                    if match:
-                        sleep_time = float(match.group(1)) + 0.5
-                logging.warning(
-                    f"FallbackGemini: All API keys exhausted in cycle {cycle+1}/{max_cycles}. "
-                    f"Sleeping for {sleep_time:.2f}s before starting next cycle..."
-                )
-                await asyncio.sleep(sleep_time)
-                
+
+                    if unavailable:
+                        break  # key loop → next model
+                if unavailable:
+                    break  # cycle loop → next model
+
+                if cycle < max_cycles - 1:
+                    sleep_time = 5.0
+                    if last_error:
+                        match = re.search(r"Please retry in ([\d\.]+)s", str(last_error))
+                        if match:
+                            sleep_time = float(match.group(1)) + 0.5
+                    logging.warning(
+                        f"FallbackGemini: keys exhausted in cycle {cycle+1}/{max_cycles} (model {current_model}). "
+                        f"Sleeping {sleep_time:.2f}s before next cycle..."
+                    )
+                    await asyncio.sleep(sleep_time)
+            # exhausted this model → loop falls through to the next model in the chain
+
         if last_error:
-            logging.error("FallbackGemini: All API keys, attempts and cycles exhausted!")
+            logging.error("FallbackGemini: all models, keys, and cycles exhausted!")
             raise last_error
 
 def get_fallback_model(model_name: str) -> BaseLlm:
@@ -141,7 +151,10 @@ def get_fallback_model(model_name: str) -> BaseLlm:
         i += 1
     if not keys:
         keys.append("DUMMY_KEY_TO_PREVENT_CRASH")
-    return FallbackGemini(model=model_name, api_keys=keys)
+    # Resilience: if the primary model is overloaded (503/"high demand"), fall back
+    # to these stable, widely-available models before failing.
+    fallback_chain = ["gemini-2.5-flash", "gemini-2.0-flash"]
+    return FallbackGemini(model=model_name, api_keys=keys, models=fallback_chain)
 
 # gemini-3.5-flash: GA desde Google I/O 19-may-2026.
 # Supera gemini-3.1-pro en benchmarks agenticos y coding.
