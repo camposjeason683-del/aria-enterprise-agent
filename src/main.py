@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from google.adk.runners import Runner
 from google.genai import types
@@ -51,7 +51,7 @@ app.add_middleware(
     allow_origins=os.environ.get(
         "ALLOWED_ORIGINS", "http://localhost:3000"
     ).split(","),
-    allow_methods=["POST", "GET"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -512,6 +512,53 @@ async def health():
         "agents": 19,
         "version": "1.0.0",
     }
+
+
+# ─── Identity + Canvas persistence (Fase 2, tenant-scoped) ──────────
+@app.get("/api/v1/me")
+async def me(tenant: TenantContext = Depends(require_tenant)):
+    return {"user_id": tenant.user_id, "tenant_id": tenant.tenant_id, "role": tenant.role}
+
+
+@app.get("/api/v1/canvas")
+async def get_canvas(tenant: TenantContext = Depends(require_tenant)):
+    """Load the caller's canvas workspace (RLS-scoped)."""
+    client = await get_supabase()
+    res = (
+        await client.table("canvas_workspaces")
+        .select("state")
+        .eq("user_id", tenant.user_id)
+        .limit(1)
+        .execute()
+    )
+    return {"state": res.data[0]["state"] if res.data else None}
+
+
+@app.put("/api/v1/canvas")
+async def put_canvas(
+    state: dict = Body(...), tenant: TenantContext = Depends(require_tenant)
+):
+    """Save the caller's canvas workspace (one per user; RLS-scoped)."""
+    client = await get_supabase()
+    existing = (
+        await client.table("canvas_workspaces")
+        .select("id")
+        .eq("user_id", tenant.user_id)
+        .limit(1)
+        .execute()
+    )
+    if existing.data:
+        await (
+            client.table("canvas_workspaces")
+            .update({"state": state})
+            .eq("user_id", tenant.user_id)
+            .execute()
+        )
+    else:
+        await client.table("canvas_workspaces").insert(
+            {"tenant_id": tenant.tenant_id, "user_id": tenant.user_id, "state": state}
+        ).execute()
+    return {"status": "ok"}
 
 
 from ag_ui_adk import ADKAgent, add_adk_fastapi_endpoint
