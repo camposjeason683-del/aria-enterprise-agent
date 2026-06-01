@@ -1,7 +1,15 @@
-import { redirect } from "next/navigation";
+"use client";
+import { useRouter } from "next/navigation";
+import { useEffect } from "react";
 
-// Home → the original /sandbox canvas (the main interface). It gates on auth
-// (sandbox/layout.tsx) and bounces to /login if there's no session.
+import { getToken } from "@/lib/auth";
+
+// Home: if there's a session → the canvas; if you never logged in → /login.
+// (The /sandbox route itself is directly testable — it auto-uses the demo tenant.)
 export default function Home() {
-  redirect("/sandbox");
+  const router = useRouter();
+  useEffect(() => {
+    router.replace(getToken() ? "/sandbox" : "/login");
+  }, [router]);
+  return null;
 }
