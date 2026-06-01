@@ -9,10 +9,9 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from google.adk.runners import Runner
-from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
 load_dotenv()
@@ -20,16 +19,20 @@ load_dotenv()
 from src.agents.coordinator import build_root_agent  # noqa: E402
 from src.config import ALLOWED_AUDIO_TYPES, ALLOWED_IMAGE_TYPES  # noqa: E402
 from src.config import APP_NAME, MAX_FILE_SIZE, MAX_MESSAGE_LENGTH  # noqa: E402
-from src.infra.db import close_supabase, get_supabase  # noqa: E402
+from src.infra.auth import require_tenant  # noqa: E402
+from src.infra.db import close_supabase, get_supabase, get_system_client  # noqa: E402
 from src.infra.logger import log_error, log_info  # noqa: E402
-from src.infra.rate_limiter import rate_limiter  # noqa: E402
+from src.infra.rate_limiter import check_rate_limit, rate_limiter  # noqa: E402
+from src.infra.session_insforge import InsForgeSessionService  # noqa: E402
+from src.infra.tenant_context import TenantContext  # noqa: E402
 
 
 # ─── Lifecycle ───────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # No warm-up call here: get_supabase() is now tenant-scoped and there is no
+    # tenant context at startup. The shared InsForge HTTP client is created lazily.
     log_info("🟢 ARIA-OS starting up")
-    await get_supabase()  # Warm up connection
     yield
     log_info("🔴 ARIA-OS shutting down")
     await close_supabase()
@@ -53,7 +56,8 @@ app.add_middleware(
 
 # ─── ADK Runner ──────────────────────────────────────────────────────
 root_agent = build_root_agent()
-session_service = InMemorySessionService()
+# Durable, multi-instance session storage (write-through to InsForge).
+session_service = InsForgeSessionService()
 runner = Runner(
     agent=root_agent,
     app_name=APP_NAME,
@@ -76,7 +80,7 @@ async def is_ai_active() -> bool:
     """Read the kill switch flag from the database with auto-reconnect retry."""
     for attempt in range(2):
         try:
-            client = await get_supabase()
+            client = get_system_client()
             res = (
                 await client.table("system_config")
                 .select("value")
@@ -94,27 +98,31 @@ async def is_ai_active() -> bool:
 
 
 # ─── Helper: Session management ─────────────────────────────────────
-async def get_or_create_session(user_id: str, session_id: str = ""):
+async def get_or_create_session(
+    user_id: str, session_id: str = "", state: dict | None = None
+):
     session = None
     if session_id:
         session = await session_service.get_session(
             app_name=APP_NAME, user_id=user_id, session_id=session_id
         )
     if not session:
+        # `state` seeds tenant_id/user_id/role into the ADK session (read by
+        # tools and persisted to agent_sessions).
         session = await session_service.create_session(
-            app_name=APP_NAME, user_id=user_id, session_id=session_id or None
+            app_name=APP_NAME, user_id=user_id, session_id=session_id or None, state=state
         )
     return session
 
 
-# ─── Helper: Upload to Supabase Storage ─────────────────────────────
+# ─── Helper: Upload to storage ──────────────────────────────────────
 async def save_to_storage(data: bytes, filename: str) -> str:
-    client = await get_supabase()
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    path = f"uploads/{ts}_{filename}"
-    await client.storage.from_("aria-artifacts").upload(path, data)
-    url = client.storage.from_("aria-artifacts").get_public_url(path)
-    return url
+    # TODO(storage/S6): migrate artifact uploads to InsForge storage. Until then,
+    # attachments beyond image/audio are not persisted (the chat text/image/audio
+    # path is unaffected).
+    raise HTTPException(
+        501, "El almacenamiento de archivos se está migrando a InsForge (pendiente)."
+    )
 
 
 # ─── Chat Endpoint (Multimodal) ─────────────────────────────────────
@@ -122,22 +130,22 @@ async def save_to_storage(data: bytes, filename: str) -> str:
 async def chat(
     message: str = Form(""),
     session_id: str = Form(""),
-    user_id: str = Form("default"),
     file: UploadFile | None = File(None),
+    tenant: TenantContext = Depends(require_tenant),
 ):
     start = time.time()
+    # Identity comes from the verified JWT (never a client-supplied form field).
+    user_id = tenant.user_id
 
     # 1. Kill Switch
     if not await is_ai_active():
         raise HTTPException(503, "ARIA está desactivada por el administrador.")
 
-    # 2. Rate Limit
-    if not rate_limiter.is_allowed(user_id):
-        raise HTTPException(
-            429,
-            f"Límite de solicitudes excedido. "
-            f"Quedan {rate_limiter.remaining(user_id)} intentos.",
-        )
+    # 2. Rate limit (per tenant+user, by subscription tier; shared counter)
+    # TODO(tier): resolve the real tier from tenants.subscription_tier.
+    rate = await check_rate_limit(tenant.tenant_id, user_id, "free")
+    if not rate.allowed:
+        raise HTTPException(429, "Límite de solicitudes excedido para tu plan.")
 
     # 3. Build multimodal parts
     parts: list[types.Part] = []
@@ -178,8 +186,12 @@ async def chat(
     if not parts:
         raise HTTPException(400, "Envía un mensaje, imagen o archivo.")
 
-    # 4. Session
-    session = await get_or_create_session(user_id, session_id)
+    # 4. Session (seed tenant identity into ADK state for tools + persistence)
+    session = await get_or_create_session(
+        user_id,
+        session_id,
+        state={"tenant_id": tenant.tenant_id, "user_id": user_id, "role": tenant.role},
+    )
 
     # 5. Run Agent (with retry-backoff for 429/503)
     response_parts: list[str] = []
@@ -253,20 +265,15 @@ async def chat(
         duration_ms=duration,
     )
 
-    # 6. Usage log (fire-and-forget)
+    # 6. Usage log (fire-and-forget; system table, no PII in the payload)
     try:
-        client = await get_supabase()
+        client = get_system_client()
         await client.table("aria_usage_log").insert(
             {
+                "tenant_id": tenant.tenant_id,
                 "user_id": user_id,
-                "session_id": session.id,
                 "agent": last_agent,
-                "message_preview": message[:100] if message else "[file]",
                 "response_time_ms": duration,
-                "input_type": "image" if file and file.content_type in ALLOWED_IMAGE_TYPES
-                else "audio" if file and file.content_type in ALLOWED_AUDIO_TYPES
-                else "file" if file
-                else "text",
             }
         ).execute()
     except Exception:
@@ -277,14 +284,18 @@ async def chat(
         "session_id": session.id,
         "agent": last_agent,
         "response_time_ms": duration,
-        "remaining_requests": rate_limiter.remaining(user_id),
+        "remaining_requests": rate.remaining,
     }
 
 
 # ─── Admin Endpoints ─────────────────────────────────────────────────
 @app.post("/api/v1/admin/kill-switch")
-async def toggle_kill_switch(active: bool):
-    client = await get_supabase()
+async def toggle_kill_switch(
+    active: bool, tenant: TenantContext = Depends(require_tenant)
+):
+    if tenant.role != "admin":
+        raise HTTPException(403, "Solo un admin puede usar el kill switch.")
+    client = get_system_client()
     await (
         client.table("system_config")
         .upsert({"key": "ai_active", "value": str(active).lower()})
@@ -295,7 +306,9 @@ async def toggle_kill_switch(active: bool):
 
 
 @app.get("/api/v1/proposals")
-async def list_proposals(status: str = "pending"):
+async def list_proposals(
+    status: str = "pending", tenant: TenantContext = Depends(require_tenant)
+):
     client = await get_supabase()
     res = (
         await client.table("aria_proposals")
@@ -308,14 +321,16 @@ async def list_proposals(status: str = "pending"):
 
 
 @app.post("/api/v1/proposals/{proposal_id}/approve")
-async def approve_proposal(proposal_id: str, user_id: str = "admin"):
+async def approve_proposal(
+    proposal_id: str, tenant: TenantContext = Depends(require_tenant)
+):
     client = await get_supabase()
     await (
         client.table("aria_proposals")
         .update(
             {
                 "status": "approved",
-                "approved_by": user_id,
+                "approved_by": tenant.user_id,
                 "approved_at": datetime.now().isoformat(),
             }
         )
@@ -326,7 +341,11 @@ async def approve_proposal(proposal_id: str, user_id: str = "admin"):
 
 
 @app.post("/api/v1/proposals/{proposal_id}/reject")
-async def reject_proposal(proposal_id: str, reason: str = ""):
+async def reject_proposal(
+    proposal_id: str,
+    reason: str = "",
+    tenant: TenantContext = Depends(require_tenant),
+):
     client = await get_supabase()
     await (
         client.table("aria_proposals")
@@ -338,7 +357,9 @@ async def reject_proposal(proposal_id: str, reason: str = ""):
 
 
 @app.post("/api/v1/proposals/{proposal_id}/execute")
-async def execute_proposal(proposal_id: str):
+async def execute_proposal(
+    proposal_id: str, tenant: TenantContext = Depends(require_tenant)
+):
     from src.tools.strategic import execute_approved_proposal
     res = await execute_approved_proposal(proposal_id)
     if "error" in res:
@@ -350,7 +371,8 @@ async def execute_proposal(proposal_id: str):
 async def add_proposal_comment(
     proposal_id: str,
     content: str = Form(...),
-    author: str = Form("admin")
+    author: str = Form("admin"),
+    tenant: TenantContext = Depends(require_tenant),
 ):
     client = await get_supabase()
     
@@ -458,51 +480,25 @@ Como StrategicAdvisor (el COO virtual de ARIA-OS) de la empresa, debes responder
 
 
 
+# NOTE (S6): the cron endpoints below were single-tenant. In the SaaS model they
+# must iterate the ACTIVE tenants and run each pipeline under that tenant's
+# context (a service JWT per tenant) so the agent's tools stay RLS-scoped. Until
+# that per-tenant loop lands they return 501 instead of running without a tenant.
 @app.post("/api/v1/cron/morning-brief")
-async def trigger_morning_brief(user_id: str = "system_cron"):
-    # Target morning_brief pipeline directly
-    session = await get_or_create_session(user_id, "cron_session")
-    
-    response_parts = []
-    async for event in runner.run_async(
-        user_id=user_id,
-        session_id=session.id,
-        new_message=types.Content(role="user", parts=[types.Part(text="Genera el reporte de la mañana.")])
-    ):
-        if event.content and event.content.parts:
-            for part in event.content.parts:
-                if part.text:
-                    response_parts.append(part.text)
-                    
-    log_info("Morning brief cron executed", user_id=user_id)
-    return {"status": "success", "pipeline_output": "\n".join(response_parts)}
+async def trigger_morning_brief():
+    raise HTTPException(501, "Cron multi-tenant pendiente (S6): iterar tenants activos.")
 
 
 @app.post("/api/v1/cron/proactive-sweep")
-async def trigger_proactive_sweep(user_id: str = "system_cron"):
-    # Run the proactive pipeline to scan for stockouts & delayed OCs
-    session = await get_or_create_session(user_id, "proactive_session")
-    
-    response_parts = []
-    async for event in runner.run_async(
-        user_id=user_id,
-        session_id=session.id,
-        new_message=types.Content(role="user", parts=[types.Part(text="SISTEMA: EJECUTAR BARRIDO PROACTIVO. Llama obligatoriamente a la herramienta `execute_proactive_sweep_auto` para realizar la consolidación, cálculos matemáticos y registro de propuestas de reabastecimiento y liquidación directamente en la base de datos con toda la lista de items. NUNCA intentes registrar propuestas manualmente ni fragmentadas en este barrido. Una vez ejecutada, presenta un resumen ordenado y profesional de las propuestas registradas.")])
-    ):
-        if event.content and event.content.parts:
-            for part in event.content.parts:
-                if part.text:
-                    response_parts.append(part.text)
-                    
-    log_info("Proactive sweep cron executed", user_id=user_id)
-    return {"status": "success", "pipeline_output": "\n".join(response_parts)}
+async def trigger_proactive_sweep():
+    raise HTTPException(501, "Cron multi-tenant pendiente (S6): iterar tenants activos.")
 
 
 @app.get("/api/v1/health")
 async def health():
     db_ok = False
     try:
-        client = await get_supabase()
+        client = get_system_client()
         await client.table("system_config").select("key").limit(1).execute()
         db_ok = True
     except Exception:

@@ -24,9 +24,11 @@ async def verify_api_key(request: Request) -> str:
     if not key:
         raise HTTPException(401, "API Key required in X-API-Key header")
 
-    from src.infra.db import get_supabase
+    # Legacy API-key path: a SYSTEM lookup (no tenant context), so use the admin
+    # client. The primary SaaS path is JWT via require_tenant.
+    from src.infra.db import get_system_client
 
-    client = await get_supabase()
+    client = get_system_client()
     key_hash = hashlib.sha256(key.encode()).hexdigest()
     res = (
         await client.table("api_keys")
