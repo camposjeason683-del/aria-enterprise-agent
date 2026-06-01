@@ -122,7 +122,7 @@ async def execute_safe_read_query(sql_query: str) -> dict:
     - aria_proposals(id, title, problem, proposed_action, urgency, status,
                      estimated_impact, risk, notes, category, created_at,
                      approved_at, approved_by, executed_at, rejection_reason)
-    - aria_proposals_comments(id, proposal_id, author, content, created_at)
+    - proposal_comments(id, proposal_id, author, content, created_at)
     - daily_inventory_ledger(id, date, product_id, product_name,
                              stock_end_of_day, sales_velocity)
     - purchase_order_drafts(id, status, items JSONB, created_by, audited_by,

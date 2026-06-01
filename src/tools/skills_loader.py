@@ -10,6 +10,13 @@ import yaml
 from typing import List, Callable
 from src.infra.logger import log_info, log_error
 
+# Repo root resolved relative to this file (src/tools/ -> ../.. = repo root),
+# so skill subprocesses get a valid PYTHONPATH and the skills/ directory is
+# found cross-platform (macOS, Linux/Cloud Run). ARIA_SKILLS_DIR overrides the
+# skills location in containers where it lives elsewhere.
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+_DEFAULT_SKILLS_DIR = os.environ.get("ARIA_SKILLS_DIR", os.path.join(_REPO_ROOT, "skills"))
+
 def make_skill_function(name: str, description: str, parameters: dict, script_path: str) -> Callable:
     """
     Generates a Python function dynamically using exec(), complete with type
@@ -74,7 +81,7 @@ def {name}({signature_args}) -> dict:
     try:
         # Run python script in subprocess, passing inputs as JSON via stdin
         # Ensure PYTHONPATH includes workspace root and skill directory, and pass home path env vars
-        workspace_root = os.path.abspath('c:/dashboard/intelligence-agent')
+        workspace_root = {repr(_REPO_ROOT)}
         python_path = os.path.pathsep.join([workspace_root, os.path.dirname(script_abs_path)])
         
         result = subprocess.run(
@@ -119,7 +126,7 @@ def {name}({signature_args}) -> dict:
 """
 
     local_ns = {}
-    sys_path = os.path.abspath('c:/dashboard/intelligence-agent')
+    sys_path = _REPO_ROOT
     if sys_path not in sys.path:
         sys.path.append(sys_path)
         
@@ -180,7 +187,7 @@ def load_dynamic_skills(skills_dir: str) -> List[Callable]:
                     log_error(f"Failed to load dynamic skill from {skill_path}: {e}")
     return dynamic_tools
 
-def refresh_dynamic_skills(agents: list, skills_dir: str = "c:/dashboard/intelligence-agent/skills"):
+def refresh_dynamic_skills(agents: list, skills_dir: str = _DEFAULT_SKILLS_DIR):
     """
     Reloads all skills from the skills_dir and updates the tools list of each agent
     by removing old dynamic skills and appending the newly loaded ones.

@@ -41,7 +41,7 @@
     "required_filters": {},
     "alias_mappings": {}
   },
-  "aria_proposals_comments": {
+  "proposal_comments": {
     "columns": ["id", "proposal_id", "author", "content", "created_at"],
     "required_filters": {},
     "alias_mappings": {}

@@ -34,8 +34,12 @@ class SyncWorker(BaseAgent):
         sync_success = False
         sync_error_msg = ""
         
-        # Load CRON_SECRET from .env.local to authenticate with the Next.js sync endpoint
-        env_local = dotenv.dotenv_values("c:/dashboard/.env.local")
+        # Load CRON_SECRET from .env.local (at repo root, resolved relative to this
+        # file: src/agents/ -> ../.. = repo root) to authenticate with the Next.js
+        # sync endpoint. Falls back to os.environ below, so on Cloud Run (no file)
+        # the env var — or the root .env loaded by main.py — still works.
+        env_local_path = os.path.join(os.path.dirname(__file__), "..", "..", ".env.local")
+        env_local = dotenv.dotenv_values(env_local_path)
         cron_secret = env_local.get("CRON_SECRET") or os.environ.get("CRON_SECRET")
         if cron_secret:
             cron_secret = cron_secret.replace('"', '').replace("'", "").strip()

@@ -12,6 +12,12 @@ from typing import List, Any, Dict
 from google.genai import Client
 from src.infra.logger import log_info, log_error
 
+# Repo root resolved relative to this file (src/tools/ -> ../.. = repo root) so
+# synthesized skills are written to the repo's skills/ dir cross-platform.
+# ARIA_SKILLS_DIR overrides it in containers where skills live elsewhere.
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+_DEFAULT_SKILLS_DIR = os.environ.get("ARIA_SKILLS_DIR", os.path.join(_REPO_ROOT, "skills"))
+
 def extract_execution_context(events: List[Any]) -> Dict[str, Any]:
     """
     Extracts the user query, executed SQL queries, executed Python scripts,
@@ -82,7 +88,7 @@ def extract_execution_context(events: List[Any]) -> Dict[str, Any]:
                         
     return context
 
-async def evaluate_and_synthesize_skill(events: List[Any], skills_dir: str = "c:/dashboard/intelligence-agent/skills") -> bool:
+async def evaluate_and_synthesize_skill(events: List[Any], skills_dir: str = _DEFAULT_SKILLS_DIR) -> bool:
     """
     Sintetiza un nuevo skill si la ejecución actual contiene lógica SQL o Python útil y aprobada.
     """

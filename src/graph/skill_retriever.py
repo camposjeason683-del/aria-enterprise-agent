@@ -8,6 +8,7 @@ Usage:
     from src.graph.skill_retriever import get_tools_for_node
     tools = get_tools_for_node("finance")
 """
+import os
 from typing import List, Callable
 
 from src.tools.sales import (
@@ -74,13 +75,19 @@ from src.tools.dynamic_execution import (
 from src.tools.ham_memory import manage_ham_memory
 from src.tools.skills_loader import load_dynamic_skills
 
+# Repo root resolved relative to this file (src/graph/ -> ../.. = repo root),
+# so the skills/ directory is found cross-platform (macOS, Linux/Cloud Run).
+# ARIA_SKILLS_DIR overrides it in containers where skills live elsewhere.
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+_SKILLS_DIR = os.environ.get("ARIA_SKILLS_DIR", os.path.join(_REPO_ROOT, "skills"))
+
 # Load hot-plug dynamic skills once (shared)
 _dynamic_skills: List[Callable] = []
 
 def _get_dynamic_skills() -> List[Callable]:
     global _dynamic_skills
     if not _dynamic_skills:
-        _dynamic_skills = load_dynamic_skills("c:/dashboard/intelligence-agent/skills")
+        _dynamic_skills = load_dynamic_skills(_SKILLS_DIR)
     return _dynamic_skills
 
 

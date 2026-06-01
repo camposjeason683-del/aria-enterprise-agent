@@ -7,7 +7,11 @@ import os
 import json
 from src.infra.logger import log_info, log_error
 
-MEMORY_DIR = "c:/dashboard/intelligence-agent/memory"
+# Memory dir resolved relative to this file (src/tools/ -> ../.. = repo root) so
+# it works cross-platform (macOS, Linux/Cloud Run). ARIA_MEMORY_DIR overrides it
+# in containers where persistent storage is mounted elsewhere.
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+MEMORY_DIR = os.environ.get("ARIA_MEMORY_DIR", os.path.join(_REPO_ROOT, "memory"))
 MEMORY_FILE = os.path.join(MEMORY_DIR, "shared_memory.json")
 
 def manage_agent_memory(action: str, key: str, value: str = None) -> dict:

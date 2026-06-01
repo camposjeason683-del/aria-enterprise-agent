@@ -9,7 +9,11 @@ from typing import Dict, Any
 from google.genai import Client
 from src.infra.logger import log_info, log_error
 
-MEMORY_DIR = "c:/dashboard/intelligence-agent/memory"
+# Memory dir resolved relative to this file (src/tools/ -> ../.. = repo root) so
+# it works cross-platform (macOS, Linux/Cloud Run). ARIA_MEMORY_DIR overrides it
+# in containers where persistent storage is mounted elsewhere.
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+MEMORY_DIR = os.environ.get("ARIA_MEMORY_DIR", os.path.join(_REPO_ROOT, "memory"))
 LIMIT_CHARACTERS = 2500
 TARGET_CHARACTERS = 1800
 
