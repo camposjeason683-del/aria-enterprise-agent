@@ -28,15 +28,23 @@
 - S4 (sesión persiste + hidrata) y S5 (rate limit contador compartido) en vivo
   (`scripts/smoke_live.py`).
 
-**Pendiente — integración frontend + Gemini (preview / key):**
-- 🔲 Chat end-to-end: rellenar `GEMINI_API_KEY` en `.env` (auth/rate-limit/sesión/
-  datos ya verificados; falta solo el razonamiento del LLM).
-- 🔲 S9 frontend: swap `localStorage`→`canvas_workspaces` (el lib ya existe).
-- 🔲 S7 integración: swap del `motion.div` por `SmartWrapper` en `sandbox/page.tsx`
-  + verificación visual del FLIP.
-- 🔲 UI de login (admin/empleado) con `@insforge/sdk` + panel de Ajustes.
-- 🔲 Loop por-tenant de los crons (`/api/v1/cron/*` hoy devuelven 501) + sync
-  WooCommerce real + migración de storage de artefactos.
+**✅ App usable verificada en el preview (1280×800):**
+- Login (`/login`, con "Entrar como demo") → `/app` (dashboard) con identidad de
+  tenant. Refresh automático de token (la sesión no muere a los 15 min).
+- Canvas con cards renderizadas por **SmartWrapper** desde `canvas_workspaces`
+  (persistencia tenant-scoped, RLS) — load on-mount + save con debounce.
+- Chat → `/api/v1/chat` (auth + tenant + RLS); maneja errores con gracia.
+- Demo: `demo@aria.os` / `AriaDemo2026!` (tenant ARIA Demo con datos sembrados).
+- Resiliencia de LLM: `FallbackGemini` cae a `gemini-2.5/2.0-flash` ante 503.
+
+**Pendiente (no bloquea el uso):**
+- 🔲 Que el **agente** dibuje cards solo (prompt para usar `manage_canvas_widgets`).
+- 🔲 Sync WooCommerce real + crons por-tenant (`/api/v1/cron/*` → 501) + storage.
+- 🔲 La vista avanzada `/sandbox` (CopilotKit + timeline) — wiring de auth aparte.
+
+> Nota: el chat depende de la capacidad de Gemini. Verificado funcionando
+> (`smoke_chat.py` → "3 órdenes", tenant-scoped); ante spikes de "high demand"
+> el fallback de modelo + retry lo cubren.
 
 ## Context
 
