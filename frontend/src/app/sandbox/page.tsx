@@ -236,7 +236,11 @@ function SandboxContent() {
 
   // The ONLY direction state flows: nodes -> messages. Derive CopilotKit's linear
   // message list from a node's active path and push it. Never the reverse.
+  // Repositioning the active path also ends any in-flight capture: the pending turn
+  // no longer matches what we're showing. (handleSubmit sets a fresh pending id itself
+  // and does NOT go through here, so a new turn's capture is unaffected.)
   const pushMessagesForNode = (nodeId: string | null, nodesMap: Record<string, TimelineNode>) => {
+    pendingNodeIdRef.current = null;
     setMessages(makeSerializable(compileMessagesForPath(getActivePath(nodeId, nodesMap))));
   };
 
@@ -279,17 +283,28 @@ function SandboxContent() {
     const pendingId = pendingNodeIdRef.current;
     if (!pendingId || !messages || messages.length === 0) return;
 
-    // The pending user turn is the message we sent with id === pendingId.
-    const userIdx = messages.findIndex((m: any) => m.id === pendingId && m.role === "user");
-    if (userIdx === -1) return; // not in the array yet
-
-    // Everything after it (assistant + tool messages, never system) is this reply.
-    const assistant = messages.slice(userIdx + 1).filter((m: any) => m.role !== "system");
-
     setNodes(prev => {
       const node = prev[pendingId];
       if (!node) return prev; // node was reverted/removed mid-stream → drop the capture
+
+      // The pending turn is the LAST user message in the array (only one turn is ever
+      // in flight — handleSubmit blocks while isLoading). We additionally require it to
+      // be OUR turn: id match, or CONTENT match if CopilotKit/AG-UI re-stamps the id on
+      // the round-trip. The content guard also rejects the brief window right after
+      // setMessages(history) where the last user message is still an ancestor's —
+      // preventing a cross-turn mis-capture.
+      let userIdx = -1;
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if ((messages[i] as any).role === "user") { userIdx = i; break; }
+      }
+      if (userIdx === -1) return prev;
+      const lastUser = messages[userIdx] as any;
+      if (lastUser.id !== pendingId && lastUser.content !== node.userMessage?.content) return prev;
+
+      // Everything after it (assistant + tool messages, never system) is this reply.
+      const assistant = messages.slice(userIdx + 1).filter((m: any) => m.role !== "system");
       if (JSON.stringify(node.assistantMessages) === JSON.stringify(assistant)) return prev;
+
       // Re-derive cards from the parent + the FULL current assistant text every time,
       // so incomplete mid-stream JSON (skipped by the parser) converges cleanly.
       const raw = assistant.map((m: any) => m.content ?? "").join("");
@@ -303,10 +318,12 @@ function SandboxContent() {
         },
       };
     });
-
-    // Release the pending turn once generation finishes.
-    if (!isLoading) pendingNodeIdRef.current = null;
-  }, [messages, isLoading]);
+    // NOTE: we do NOT release pendingNodeIdRef on !isLoading — isLoading is briefly
+    // false in the window after sendMessage() before generation starts, which would
+    // abandon the turn before the reply streams in. The ref is instead cleared when
+    // the active path is repositioned (pushMessagesForNode) or overwritten by the
+    // next handleSubmit — so a late-arriving reply always lands in the right node.
+  }, [messages]);
 
   // -- HANDLERS --
 
