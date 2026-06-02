@@ -164,6 +164,7 @@ function SandboxContent() {
   }
   const [canvasSize, setCanvasSize] = useState({ width: 970, height: 636 });
   const [isTimelineOpen, setIsTimelineOpen] = useState(true);
+  const [chatMinimized, setChatMinimized] = useState(false);
   const [timelineModal, setTimelineModal] = useState<{
     type: 'fork' | 'merge' | 'break' | 'error' | 'revert';
     nodeAId: string;
@@ -1418,11 +1419,30 @@ function SandboxContent() {
               .trim();
             if (!isLoading && !responseText) return null;
             return (
-              <div className="mb-3 max-h-52 overflow-y-auto rounded-[1.75rem] border border-white/10 bg-[#111113]/90 backdrop-blur-3xl p-4 shadow-[0_20px_50px_rgba(0,0,0,0.5)] text-sm leading-relaxed text-white/85 whitespace-pre-wrap">
-                <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-indigo-400/70">
-                  ✦ ARIA
+              <div className="relative mb-3 overflow-hidden rounded-[1.75rem] border border-white/15 bg-gradient-to-b from-white/[0.08] to-white/[0.02] shadow-[0_20px_50px_rgba(0,0,0,0.45)] ring-1 ring-inset ring-white/5 backdrop-blur-2xl">
+                {/* sheen superior — efecto cristal */}
+                <div className="pointer-events-none absolute inset-x-6 top-0 h-px bg-gradient-to-r from-transparent via-white/30 to-transparent" />
+                {/* header: marca + botón minimizar */}
+                <div className="flex items-center justify-between px-4 pt-3 pb-1.5">
+                  <div className="text-[10px] font-semibold uppercase tracking-wider text-indigo-300/80">
+                    ✦ ARIA
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setChatMinimized((m) => !m)}
+                    aria-label={chatMinimized ? "Expandir" : "Minimizar"}
+                    title={chatMinimized ? "Expandir" : "Minimizar"}
+                    className="rounded-md p-1 text-white/40 transition-colors hover:bg-white/10 hover:text-white/80"
+                  >
+                    {chatMinimized ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                  </button>
                 </div>
-                {responseText || <span className="text-white/40">Pensando…</span>}
+                {/* contenido: crece hasta ~8 líneas, luego scroll con barra custom */}
+                {!chatMinimized && (
+                  <div className="max-h-[14em] overflow-y-auto whitespace-pre-wrap px-4 pb-3.5 text-sm leading-relaxed text-white/85 [scrollbar-color:rgba(255,255,255,0.18)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-white/20 [&::-webkit-scrollbar-thumb:hover]:bg-white/35 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar]:w-1.5">
+                    {responseText || <span className="text-white/40">Pensando…</span>}
+                  </div>
+                )}
               </div>
             );
           })()}
