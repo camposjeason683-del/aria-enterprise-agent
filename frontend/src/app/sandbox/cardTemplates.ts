@@ -29,6 +29,11 @@ export interface CardTemplate {
   label: string;
   /** One-line palette subtitle. */
   description: string;
+  /** General-purpose use case: semantic role + areas where it applies (e.g. "indicador
+   *  KPI principal; áreas Ventas/Finanzas"), NOT a specific computation. Shown in the
+   *  palette tooltip and mirrored conceptually in the agent's CANVAS_PROTOCOL so the
+   *  agent picks the right card by ROLE, not by a hardcoded calculation. */
+  useCase: string;
   /** lucide icon name, resolved to a component in page.tsx. */
   icon: string;
   type: CardState["type"];
@@ -75,6 +80,7 @@ export const CARD_TEMPLATES: CardTemplate[] = [
     id: "tpl-ventas-mensuales",
     label: "Ventas mensuales",
     description: "KPI de revenue con desglose semanal",
+    useCase: "Indicador KPI principal: un monto clave con tendencia y evolución temporal. Áreas: Ventas, Finanzas, Dirección.",
     icon: "Activity",
     type: "kpi",
     spec: {
@@ -106,6 +112,7 @@ export const CARD_TEMPLATES: CardTemplate[] = [
     id: "tpl-alerta-inventario",
     label: "Alerta de inventario",
     description: "Ítems por debajo del stock mínimo",
+    useCase: "Lista de ítems que requieren acción inmediata (stock bajo, vencimientos). Áreas: Inventario, Compras, Operaciones.",
     icon: "Database",
     type: "inventory",
     spec: {
@@ -129,6 +136,7 @@ export const CARD_TEMPLATES: CardTemplate[] = [
     id: "tpl-pnl-margenes",
     label: "P&L / Márgenes",
     description: "Estado de resultados resumido",
+    useCase: "Resumen financiero de resultados y estructura de márgenes. Áreas: Finanzas, Dirección.",
     icon: "FileText",
     type: "kpi",
     spec: {
@@ -161,6 +169,7 @@ export const CARD_TEMPLATES: CardTemplate[] = [
     id: "tpl-forecast-reorden",
     label: "Forecast & reorden",
     description: "Proyección de demanda y punto de reorden",
+    useCase: "Proyección a futuro con un punto de decisión (reorden). Áreas: Demanda, Inventario, Compras.",
     icon: "Target",
     type: "kpi",
     spec: {
@@ -192,6 +201,7 @@ export const CARD_TEMPLATES: CardTemplate[] = [
     id: "tpl-top-clientes",
     label: "Top clientes",
     description: "Clientes con mayor revenue",
+    useCase: "Ranking Top-N de entidades por una métrica (clientes, productos, vendedores). Áreas: Ventas, Marketing.",
     icon: "Target",
     type: "kpi",
     spec: {
@@ -222,6 +232,7 @@ export const CARD_TEMPLATES: CardTemplate[] = [
     id: "tpl-saif-tracker",
     label: "Trazabilidad SAIF",
     description: "Estado de políticas de seguridad activas",
+    useCase: "Estado/checklist de cumplimiento o seguridad (verificado/pendiente). Áreas: Seguridad, Compliance, Gobernanza, QA.",
     icon: "Shield",
     type: "saif-tracker",
     spec: {
@@ -247,6 +258,7 @@ export const CARD_TEMPLATES: CardTemplate[] = [
     id: "tpl-cuentas-por-cobrar",
     label: "Cuentas por cobrar",
     description: "Aging de facturas pendientes",
+    useCase: "Monto pendiente segmentado por antigüedad (aging/buckets de un total). Áreas: Finanzas, Cobranzas.",
     icon: "Clock",
     type: "kpi",
     spec: {
@@ -272,6 +284,7 @@ export const CARD_TEMPLATES: CardTemplate[] = [
     id: "tpl-tabla-generica",
     label: "Tabla genérica",
     description: "Tabla editable de propósito general",
+    useCase: "Tabla de propósito general para cuando ningún formato específico encaja. Áreas: cualquiera.",
     icon: "FileText",
     type: "kpi",
     spec: {
@@ -296,6 +309,7 @@ export const CARD_TEMPLATES: CardTemplate[] = [
     id: "tpl-embudo-ventas",
     label: "Embudo de ventas",
     description: "Conversión por etapa del pipeline",
+    useCase: "Conversión por etapas decrecientes (funnel/pipeline) con tasas. Áreas: Ventas, Marketing.",
     icon: "Target",
     type: "kpi",
     spec: {
@@ -328,6 +342,7 @@ export const CARD_TEMPLATES: CardTemplate[] = [
     id: "tpl-comparativa-periodos",
     label: "Comparativa de períodos",
     description: "Período actual vs. anterior",
+    useCase: "Comparación de dos períodos lado a lado con delta (actual vs anterior). Áreas: Finanzas, Ventas, Dirección.",
     icon: "Activity",
     type: "kpi",
     spec: {

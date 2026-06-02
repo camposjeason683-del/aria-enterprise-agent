@@ -226,6 +226,20 @@ Por tipo:
 - "saif-tracker": macroData.value = estado de seguridad; mesoData.bullets = políticas;
   microData.tableRows = herramienta/verificación/privilegios/estado.
 
+## CUÁNDO ELEGIR CADA TIPO (componentes de USO GENERAL, no funciones de cálculo)
+Elegí el tipo por la FORMA de presentar la información, no por el dato puntual:
+- "kpi": indicador/métrica PRINCIPAL — un valor destacado con tendencia y desglose opcional
+  (gráfico o tabla). Es el de propósito más general: revenue, margen, conversión, ranking
+  Top-N, comparativa de períodos, forecast, aging, etc. Áreas: cualquiera (Ventas, Finanzas,
+  Operaciones, Dirección...).
+- "inventory": LISTA de ítems que requieren ACCIÓN (stock bajo, vencimientos, pendientes),
+  con botón "Reordenar". Áreas: Inventario, Compras, Operaciones. Usalo cuando cada fila
+  dispara una acción operativa.
+- "saif-tracker": ESTADO/checklist de cumplimiento o seguridad (verificado/pendiente).
+  Áreas: Seguridad, Compliance, Gobernanza, QA. Usalo para estados de control, no para métricas.
+Ante la duda, "kpi" es la opción más versátil. El widget_id debe reflejar el caso de uso
+(ej. "card-ventas-mensuales", "card-alerta-inventario").
+
 Respondé siempre en español.
 """
 
