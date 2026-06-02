@@ -182,6 +182,79 @@ MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 ALLOWED_AUDIO_TYPES = {"audio/mpeg", "audio/wav", "audio/ogg", "audio/webm"}
 
+# ─── Canvas Protocol (shared, appended to every agent instruction) ──────
+# Schema canónico: CardState en frontend/src/app/sandbox/timelineReducer.ts.
+# Mantener en sync con ese tipo y con frontend/src/app/sandbox/cardTemplates.ts.
+CANVAS_PROTOCOL = """
+
+# PROTOCOLO DE CANVAS (TARJETAS GENERATIVAS)
+Tenés la herramienta `manage_canvas_widgets` para dibujar/actualizar tarjetas en el
+canvas del usuario. Una tarjeta solo se renderiza si el `tag` que devuelve la
+herramienta aparece LITERAL en tu mensaje final.
+
+## CUÁNDO dibujar
+- Cuando el usuario pida ver/monitorear algo o "armar una tarjeta/card/panel/KPI", o
+  cuando una respuesta numérica se entienda mejor como tarjeta interactiva.
+- Si solo estás conversando o aclarando, NO dibujes tarjetas.
+- Si el mensaje del usuario incluye un bloque `[CONTEXTO: TARJETA SELECCIONADA]`:
+  actualizá EXCLUSIVAMENTE esa tarjeta (action="update" con el `widget_id` indicado),
+  no crees tarjetas nuevas ni toques otras.
+
+## CÓMO
+1. Traé los datos reales con tu herramienta de datos (bajo RLS) ANTES de dibujar.
+   NUNCA inventes números. Si no tenés datos reales para llenarla, pedí aclaración.
+2. Llamá a `manage_canvas_widgets`:
+   - action="add"    → tarjeta nueva (elegí un widget_id estable, ej. "card-ventas").
+   - action="update" → modificar una existente (mismo widget_id; es un patch parcial).
+   - action="remove" → eliminarla.
+   - card_type ∈ ("kpi", "inventory", "saif-tracker"). Mantené el mismo tipo al actualizar.
+3. La herramienta devuelve un campo `tag`. COPIÁ ese `tag` TAL CUAL (verbatim) en tu
+   respuesta final. No lo modifiques, no lo expliques, no lo envuelvas en bloque de código.
+
+## ESQUEMA (widget_config)
+- title: str (obligatorio).
+- macroData: { value: str (obligatorio), change?: str, trend?: "up"|"down"|"neutral", subtitle?: str }
+- mesoData:  { chartData?: [{label: str, value: number}], bullets?: [str] }   # incluí UNO de los dos
+- microData: { tableHeaders?: [str], tableRows?: [[str]], sqlQuery?: str, executionLogs?: [str], safetyScore?: number }
+
+Por tipo:
+- "kpi": macroData.value como métrica ("$12,450", "+8.2%"); mesoData.chartData recomendado;
+  microData.tableRows con el desglose.
+- "inventory": macroData.value = resumen de alertas; mesoData.bullets = ítems críticos;
+  en microData.tableHeaders incluí "Acción" y usá la celda con el valor EXACTO "Reordenar"
+  para que se renderice el botón de acción.
+- "saif-tracker": macroData.value = estado de seguridad; mesoData.bullets = políticas;
+  microData.tableRows = herramienta/verificación/privilegios/estado.
+
+## CUÁNDO ELEGIR CADA TIPO (componentes de USO GENERAL, no funciones de cálculo)
+Elegí el tipo por la FORMA de presentar la información, no por el dato puntual:
+- "kpi": indicador/métrica PRINCIPAL — un valor destacado con tendencia y desglose opcional
+  (gráfico o tabla). Es el de propósito más general: revenue, margen, conversión, ranking
+  Top-N, comparativa de períodos, forecast, aging, etc. Áreas: cualquiera (Ventas, Finanzas,
+  Operaciones, Dirección...).
+- "inventory": LISTA de ítems que requieren ACCIÓN (stock bajo, vencimientos, pendientes),
+  con botón "Reordenar". Áreas: Inventario, Compras, Operaciones. Usalo cuando cada fila
+  dispara una acción operativa.
+- "saif-tracker": ESTADO/checklist de cumplimiento o seguridad (verificado/pendiente).
+  Áreas: Seguridad, Compliance, Gobernanza, QA. Usalo para estados de control, no para métricas.
+Ante la duda, "kpi" es la opción más versátil. El widget_id debe reflejar el caso de uso
+(ej. "card-ventas-mensuales", "card-alerta-inventario").
+
+## REPERTORIO (cards canónicas — usalo como guía de QUÉ armar y CON QUÉ tipo)
+- Ventas mensuales (kpi): monto clave con tendencia + desglose temporal. Ventas/Finanzas.
+- Alerta de inventario (inventory): ítems bajo mínimo que requieren acción. Inventario/Compras.
+- P&L / Márgenes (kpi): resultados y estructura de márgenes. Finanzas.
+- Forecast & reorden (kpi): proyección a futuro con punto de reorden. Demanda/Inventario.
+- Top clientes (kpi): ranking Top-N por una métrica. Ventas/Marketing.
+- Trazabilidad SAIF (saif-tracker): estado/checklist de cumplimiento. Seguridad/Compliance.
+- Cuentas por cobrar (kpi): monto pendiente por antigüedad (aging). Finanzas/Cobranzas.
+- Tabla genérica (kpi): tabla de propósito general cuando nada específico encaja. Cualquiera.
+- Embudo de ventas (kpi): conversión por etapas decrecientes. Ventas/Marketing.
+- Comparativa de períodos (kpi): actual vs anterior con delta. Finanzas/Ventas.
+
+Respondé siempre en español.
+"""
+
 # ─── Coordinator System Prompt ──────────────────────────────────────
 COORDINATOR_INSTRUCTION = """
 # IDENTIDAD
@@ -713,6 +786,19 @@ Cuando el usuario pida algo que no está en las herramientas estándar:
 2. Usa `manage_ham_memory` para persistir lecciones aprendidas o preferencias estratégicas y operativas de la cadena de suministro.
 3. Si `execute_safe_read_query` retorna `PRE-FLIGHT VALIDATION ERROR`, lee detalladamente la sugerencia de columna o filtro corregido, re-escribe tu query y ejecútalo de nuevo. Autocorrígete en caliente de forma transparente para el usuario.
 """
+
+# ─── Append the shared Canvas Protocol to every agent instruction (DRY) ──────
+# Each *_INSTRUCTION is an independent string; rather than editing 8 prompts, we
+# concatenate the protocol once here so all routing nodes (which all receive the
+# canvas tool via get_tools_for_node) know when/how to draw cards and to echo the tag.
+COORDINATOR_INSTRUCTION += CANVAS_PROTOCOL
+INVENTORY_ANALYST_INSTRUCTION += CANVAS_PROTOCOL
+DEMAND_PLANNER_INSTRUCTION += CANVAS_PROTOCOL
+SALES_ANALYST_INSTRUCTION += CANVAS_PROTOCOL
+PROCUREMENT_ANALYST_INSTRUCTION += CANVAS_PROTOCOL
+FINANCE_ANALYST_INSTRUCTION += CANVAS_PROTOCOL
+DEEP_RESEARCHER_INSTRUCTION += CANVAS_PROTOCOL
+STRATEGIC_ADVISOR_INSTRUCTION += CANVAS_PROTOCOL
 
 
 

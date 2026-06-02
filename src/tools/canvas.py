@@ -25,6 +25,74 @@ def _err(message: str) -> dict:
     return {"status": "error", "error": message}
 
 
+# Per-type required macro fields. Kept minimal on purpose: the frontend renderer
+# (Macro/Meso/MicroBody) is tolerant (optional chaining everywhere), so over-strict
+# validation here would be the only thing that could reject a card the UI can draw.
+# Canonical schema: CardState in frontend/src/app/sandbox/timelineReducer.ts.
+_CARD_SCHEMAS: dict = {
+    "kpi": {"macro_required": ("value",)},
+    "inventory": {"macro_required": ("value",)},
+    "saif-tracker": {"macro_required": ("value",)},
+}
+
+
+def _validate_card(card_type: str, widget_config: dict, *, partial: bool = False) -> str | None:
+    """Return an error message, or None if the card payload is shape-valid.
+
+    partial=True (update): it's a merge patch, so macroData is optional; we only
+    shape-guard whatever is present. partial=False (add): macroData + its per-type
+    required fields are enforced.
+    """
+    macro = widget_config.get("macroData")
+    if not partial:
+        if not isinstance(macro, dict):
+            return "widget_config.macroData (dict) is required to add a card"
+        for field in _CARD_SCHEMAS.get(card_type, {}).get("macro_required", ()):
+            if not macro.get(field):
+                return f"widget_config.macroData.{field} is required for card_type '{card_type}'"
+    elif macro is not None and not isinstance(macro, dict):
+        return "widget_config.macroData must be an object"
+
+    meso = widget_config.get("mesoData")
+    if meso is not None:
+        if not isinstance(meso, dict):
+            return "widget_config.mesoData must be an object"
+        chart = meso.get("chartData")
+        if chart is not None and (
+            not isinstance(chart, list)
+            or not all(
+                isinstance(p, dict)
+                and isinstance(p.get("label"), str)
+                and isinstance(p.get("value"), (int, float))
+                and not isinstance(p.get("value"), bool)
+                for p in chart
+            )
+        ):
+            return "mesoData.chartData must be a list of {label: str, value: number}"
+        bullets = meso.get("bullets")
+        if bullets is not None and (
+            not isinstance(bullets, list) or not all(isinstance(b, str) for b in bullets)
+        ):
+            return "mesoData.bullets must be a list of strings"
+
+    micro = widget_config.get("microData")
+    if micro is not None:
+        if not isinstance(micro, dict):
+            return "widget_config.microData must be an object"
+        rows = micro.get("tableRows")
+        if rows is not None and (
+            not isinstance(rows, list)
+            or not all(isinstance(r, list) and all(isinstance(c, str) for c in r) for r in rows)
+        ):
+            return "microData.tableRows must be a list of string arrays"
+        headers = micro.get("tableHeaders")
+        if headers is not None and (
+            not isinstance(headers, list) or not all(isinstance(h, str) for h in headers)
+        ):
+            return "microData.tableHeaders must be a list of strings"
+    return None
+
+
 def manage_canvas_widgets(
     action: str,
     widget_id: str,
@@ -64,13 +132,17 @@ def manage_canvas_widgets(
     if action == "add":
         if card_type not in CARD_TYPES:
             return _err(f"card_type must be one of {CARD_TYPES}")
-        if not isinstance(widget_config.get("macroData"), dict):
-            return _err("widget_config.macroData (dict) is required to add a card")
+        err = _validate_card(card_type, widget_config)
+        if err:
+            return _err(err)
         body = json.dumps(widget_config, ensure_ascii=False)
         tag = f'<create_card id="{widget_id}" type="{card_type}">\n{body}\n</create_card>'
         return {"status": "ok", "action": "add", "tag": tag}
 
-    # update
+    # update (partial patch — macroData optional; only shape-guard what's present)
+    err = _validate_card(card_type, widget_config, partial=True)
+    if err:
+        return _err(err)
     body = json.dumps(widget_config, ensure_ascii=False)
     tag = f'<update_card id="{widget_id}">\n{body}\n</update_card>'
     return {"status": "ok", "action": "update", "tag": tag}
