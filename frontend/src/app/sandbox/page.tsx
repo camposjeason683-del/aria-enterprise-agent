@@ -1099,7 +1099,6 @@ function SandboxContent() {
                       <button
                         key={tpl.id}
                         onClick={() => handleInsertTemplate(tpl)}
-                        title={tpl.useCase}
                         className="flex items-start gap-2.5 text-left p-2.5 rounded-xl bg-white/[0.03] hover:bg-indigo-500/15 border border-white/5 hover:border-indigo-400/30 transition-all"
                       >
                         <div className="p-1.5 rounded-lg bg-white/5 text-indigo-400 border border-white/5 shrink-0">

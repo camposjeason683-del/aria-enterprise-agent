@@ -240,6 +240,18 @@ Elegí el tipo por la FORMA de presentar la información, no por el dato puntual
 Ante la duda, "kpi" es la opción más versátil. El widget_id debe reflejar el caso de uso
 (ej. "card-ventas-mensuales", "card-alerta-inventario").
 
+## REPERTORIO (cards canónicas — usalo como guía de QUÉ armar y CON QUÉ tipo)
+- Ventas mensuales (kpi): monto clave con tendencia + desglose temporal. Ventas/Finanzas.
+- Alerta de inventario (inventory): ítems bajo mínimo que requieren acción. Inventario/Compras.
+- P&L / Márgenes (kpi): resultados y estructura de márgenes. Finanzas.
+- Forecast & reorden (kpi): proyección a futuro con punto de reorden. Demanda/Inventario.
+- Top clientes (kpi): ranking Top-N por una métrica. Ventas/Marketing.
+- Trazabilidad SAIF (saif-tracker): estado/checklist de cumplimiento. Seguridad/Compliance.
+- Cuentas por cobrar (kpi): monto pendiente por antigüedad (aging). Finanzas/Cobranzas.
+- Tabla genérica (kpi): tabla de propósito general cuando nada específico encaja. Cualquiera.
+- Embudo de ventas (kpi): conversión por etapas decrecientes. Ventas/Marketing.
+- Comparativa de períodos (kpi): actual vs anterior con delta. Finanzas/Ventas.
+
 Respondé siempre en español.
 """
 

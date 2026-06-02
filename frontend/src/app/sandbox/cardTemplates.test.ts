@@ -41,7 +41,7 @@ describe("instantiateTemplate", () => {
 
   it("defaults meso/micro to {} when a template omits them", () => {
     const bare: CardTemplate = {
-      id: "x", label: "x", description: "x", useCase: "uso de prueba", icon: "Activity", type: "kpi",
+      id: "x", label: "x", description: "x", icon: "Activity", type: "kpi",
       spec: { title: "T", macroData: { value: "1" } },
     };
     const card = instantiateTemplate(bare, counterIdGen(), "t", 0);
@@ -62,9 +62,6 @@ describe("CARD_TEMPLATES — repertoire integrity (drift guard vs backend schema
     (_label, tpl) => {
       // type
       expect(VALID_TYPES.has(tpl.type)).toBe(true);
-      // useCase: every card documents a general-purpose role + areas (guides the agent)
-      expect(typeof tpl.useCase).toBe("string");
-      expect(tpl.useCase.length).toBeGreaterThan(10);
       // title
       expect(typeof tpl.spec.title).toBe("string");
       expect(tpl.spec.title.length).toBeGreaterThan(0);
