@@ -13,19 +13,34 @@ const AGENT_URL = process.env.AGENT_URL || "http://127.0.0.1:8000/api/v1/copilot
 const agents: Record<string, AbstractAgent> = {};
 agents["default"] = new HttpAgent({ url: `${AGENT_URL}/default` });
 
-const runtime = new CopilotRuntime({
-  agents,
-});
+function buildHandler(token?: string) {
+  // Forward the user's JWT (from the aria_token cookie) to the backend so the
+  // agent's tools run tenant-scoped (RLS). Built per-request to carry the token.
+  const reqAgents: Record<string, AbstractAgent> = {
+    default: new HttpAgent({
+      url: `${AGENT_URL}/default`,
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    }),
+  };
+  const runtime = new CopilotRuntime({ agents: reqAgents });
+  return copilotRuntimeNextJSAppRouterEndpoint({
+    endpoint: "/api/copilotkit",
+    serviceAdapter: new ExperimentalEmptyAdapter(),
+    runtime,
+  }).handleRequest;
+}
 
-const { handleRequest } = copilotRuntimeNextJSAppRouterEndpoint({
-  endpoint: "/api/copilotkit",
-  serviceAdapter: new ExperimentalEmptyAdapter(),
-  runtime,
-});
+function tokenFrom(req: NextRequest): string | undefined {
+  // CopilotKit forwards the Authorization header (set in <CopilotKit headers>);
+  // fall back to the aria_token cookie.
+  const header = req.headers.get("authorization");
+  if (header?.toLowerCase().startsWith("bearer ")) return header.slice(7).trim();
+  return req.cookies.get("aria_token")?.value;
+}
 
 export const POST = async (req: NextRequest) => {
   try {
-    return await handleRequest(req);
+    return await buildHandler(tokenFrom(req))(req);
   } catch (error: unknown) {
     console.error("[copilotkit]", error);
     return NextResponse.json(
@@ -54,7 +69,7 @@ export const GET = async (req: NextRequest) => {
 
   // Delegate other GETs (like SSE streams if any) to CopilotKit
   try {
-    return await handleRequest(req);
+    return await buildHandler(tokenFrom(req))(req);
   } catch (error: unknown) {
     console.error("[copilotkit GET]", error);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });

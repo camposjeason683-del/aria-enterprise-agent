@@ -5,6 +5,47 @@
 > (`pendiente_fase2.md` y `saas_packaging_plan.md`, eliminados). Última
 > actualización: 2026-06-01.
 
+## Estado de implementación (rama `feat/insforge-saas-foundation`)
+
+**Hecho y testeado (45 tests backend + 5 frontend en verde; `tsc` 0 errores):**
+- ✅ S1 adapter InsForge · S2 auth tenant · S4 session persistente · S5 rate limit
+  por tenant · S8 canvas tools · S6 (cifrado + save/load de credenciales) ·
+  S7 (componentes `SmartWrapper`/`ContentRenderer`/`cardMotion` con fix FLIP).
+- ✅ **Cutover backend**: `db.py` → cliente tenant-scoped (las ~50 tools sin
+  cambios), `main.py` con auth + rate limit + sesión InsForge + seed de state,
+  `execute_safe_read_query` vía RPC `exec_safe_read`. Smoke test del gate de auth
+  (TestClient).
+- ✅ Migraciones M1–M5, las 9 specs, y arreglos: `ag-ui-adk` faltante en deps
+  (el backend no booteaba) + import roto en `tests/test_tools.py`.
+
+**✅ Verificado EN VIVO contra el proyecto `aria-os` (`y4bu5qnj.us-east`):**
+- Proyecto InsForge creado + linkeado; **migraciones M1–M5 aplicadas**
+  (`scripts/apply_migrations.py`).
+- Adapter S1 + RPC `exec_safe_read` funcionando contra aria-os.
+- 🔒 **GATE DE AISLAMIENTO 2-TENANTS PASÓ** (`scripts/verify_isolation.py`): con
+  el JWT de A, ni la tool, ni el SQL crudo sin filtro, ni el `COUNT(*)` ven datos
+  de B. La invariante cardinal de seguridad está probada con RLS real.
+- S4 (sesión persiste + hidrata) y S5 (rate limit contador compartido) en vivo
+  (`scripts/smoke_live.py`).
+
+**✅ App usable verificada en el preview (1280×800):**
+- Login (`/login`, con "Entrar como demo") → `/app` (dashboard) con identidad de
+  tenant. Refresh automático de token (la sesión no muere a los 15 min).
+- Canvas con cards renderizadas por **SmartWrapper** desde `canvas_workspaces`
+  (persistencia tenant-scoped, RLS) — load on-mount + save con debounce.
+- Chat → `/api/v1/chat` (auth + tenant + RLS); maneja errores con gracia.
+- Demo: `demo@aria.os` / `AriaDemo2026!` (tenant ARIA Demo con datos sembrados).
+- Resiliencia de LLM: `FallbackGemini` cae a `gemini-2.5/2.0-flash` ante 503.
+
+**Pendiente (no bloquea el uso):**
+- 🔲 Que el **agente** dibuje cards solo (prompt para usar `manage_canvas_widgets`).
+- 🔲 Sync WooCommerce real + crons por-tenant (`/api/v1/cron/*` → 501) + storage.
+- 🔲 La vista avanzada `/sandbox` (CopilotKit + timeline) — wiring de auth aparte.
+
+> Nota: el chat depende de la capacidad de Gemini. Verificado funcionando
+> (`smoke_chat.py` → "3 órdenes", tenant-scoped); ante spikes de "high demand"
+> el fallback de modelo + retry lo cubren.
+
 ## Context
 
 ARIA-OS (Google ADK 2.1 + FastAPI + Next.js/CopilotKit) es un agente "COO virtual" **monousuario codeado para Supabase**. Se migra a **InsForge** (BaaS real del usuario, donde ya corre su app "Cinco"), se vuelve **SaaS para ~10 empresas × ~20 empleados (~200 usuarios, pico 10–30 req)** y se le da al agente "manos" sobre el canvas (**Fase 2 Estado Pasivo**).
