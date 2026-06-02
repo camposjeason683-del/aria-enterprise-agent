@@ -44,6 +44,49 @@ import type { CardState, TimelineNode, TimelineBranch } from "./timelineReducer"
 // Re-export the timeline types (moved to ./timelineReducer) for back-compat with
 // any external importer of this module.
 export type { CardState, TimelineNode, TimelineBranch } from "./timelineReducer";
+import { CARD_TEMPLATES, instantiateTemplate, type CardTemplate } from "./cardTemplates";
+
+// Lucide icons referenced by the card templates (resolved from the string `icon`).
+const TEMPLATE_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
+  Activity,
+  Database,
+  FileText,
+  Target,
+  Shield,
+  Clock,
+};
+
+/**
+ * Build the context block prepended to a chat message when a card is selected, so
+ * the agent patches ONLY that card. The id is injected literally because the
+ * frontend parser only applies <update_card> when the id already exists.
+ */
+function buildSelectedCardPrefix(card: CardState): string {
+  const spec = JSON.stringify(
+    {
+      id: card.id,
+      type: card.type,
+      title: card.title,
+      macroData: card.macroData,
+      mesoData: card.mesoData,
+      microData: card.microData,
+    },
+    null,
+    2,
+  );
+  return (
+    `[CONTEXTO: TARJETA SELECCIONADA]\n` +
+    `El usuario tiene seleccionada UNA tarjeta del canvas y su mensaje se refiere EXCLUSIVAMENTE a ella.\n` +
+    `- id: "${card.id}"\n- tipo: "${card.type}"\n- estado actual (JSON):\n${spec}\n\n` +
+    `INSTRUCCIONES OBLIGATORIAS:\n` +
+    `1. Modificá ÚNICAMENTE esta tarjeta. NO crees tarjetas nuevas ni toques otras.\n` +
+    `2. Usá manage_canvas_widgets con action="update" y widget_id="${card.id}".\n` +
+    `3. Si necesitás datos reales, consultá primero la herramienta de datos (bajo RLS) y luego actualizá.\n` +
+    `4. Incluí el tag <update_card id="${card.id}"> devuelto por la herramienta, VERBATIM, en tu respuesta.\n` +
+    `5. Respondé en español.\n\n` +
+    `--- MENSAJE DEL USUARIO ---\n`
+  );
+}
 
 // Deterministic short hash from any string (for stable motion animation transitions)
 function contentHash(str: string): string {
@@ -165,6 +208,12 @@ function SandboxContent() {
   const [canvasSize, setCanvasSize] = useState({ width: 970, height: 636 });
   const [isTimelineOpen, setIsTimelineOpen] = useState(true);
   const [chatMinimized, setChatMinimized] = useState(false);
+  // Card repertoire: the selected canvas card (its chat messages patch THAT card via
+  // <update_card>), the palette popover toggle, and a click-vs-drag gate (Framer fires
+  // a synthetic click after a drag, so we ignore clicks that followed a real drag).
+  const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
+  const [isPaletteOpen, setIsPaletteOpen] = useState(false);
+  const wasCardDraggedRef = useRef(false);
   const [timelineModal, setTimelineModal] = useState<{
     type: 'fork' | 'merge' | 'break' | 'error' | 'revert';
     nodeAId: string;
@@ -330,8 +379,18 @@ function SandboxContent() {
 
   const handleSubmit = async (e?: React.FormEvent, directText?: string) => {
     e?.preventDefault();
-    const text = directText || inputValue;
-    if (!text.trim() || isLoading) return;
+    const rawText = directText || inputValue;
+    if (!rawText.trim() || isLoading) return;
+
+    // If a card is selected (and this isn't an already-scoped directText), prepend the
+    // card's spec + an "update only this card" instruction so the agent patches THAT
+    // card. `text` (augmented) is used for BOTH the node's userMessage and sendMessage,
+    // keeping the capture effect's content-match valid.
+    let text = rawText;
+    if (selectedCardId && !directText) {
+      const card = activeNodeId ? nodes[activeNodeId]?.activeCards[selectedCardId] : undefined;
+      if (card) text = buildSelectedCardPrefix(card) + rawText;
+    }
 
     // Pure structural decision (append vs fork vs ghost). `nodes` is the source of
     // truth; appendTurn returns the next tree + the id of the node it created.
@@ -369,6 +428,7 @@ function SandboxContent() {
     // so a late chunk can't land on the node we're leaving.
     if (isLoading) stopGeneration();
     pendingNodeIdRef.current = null;
+    setSelectedCardId(null); // the selected card may not exist on the new node
     setActiveNodeId(nodeId);
     setActiveBranchId(nodes[nodeId].branchId);
     pushMessagesForNode(nodeId, nodes);
@@ -383,6 +443,43 @@ function SandboxContent() {
     const tipNode = branchNodes.reduce((max, n) => n.depth > max.depth ? n : max, branchNodes[0]);
     handleCheckoutNode(tipNode.id);
   };
+
+  // Insert a repertoire template INSTANTLY into the active node's canvas (sample data,
+  // no agent round-trip). Same setNodes→activeCards pattern as drag/zoom. Guarded while
+  // the active node is streaming, since the capture effect recomputes that node's cards
+  // from the assistant text and would drop a fresh manual insert.
+  const handleInsertTemplate = (tpl: CardTemplate) => {
+    setIsPaletteOpen(false);
+    if (!activeNodeId || isLoading || pendingNodeIdRef.current === activeNodeId) return;
+    setNodes(prev => {
+      const node = prev[activeNodeId];
+      if (!node) return prev;
+      const index = Object.keys(node.activeCards).length;
+      const card = instantiateTemplate(tpl, () => `card-${crypto.randomUUID()}`, activeNodeId, index);
+      return { ...prev, [activeNodeId]: { ...node, activeCards: { ...node.activeCards, [card.id]: card } } };
+    });
+  };
+
+  // Ask the agent to populate a card with real (RLS) data → it emits <update_card>.
+  // Routes through handleSubmit's directText path; no new backend tool needed.
+  const handleFillWithData = (card: CardState) => {
+    if (isLoading) return;
+    const msg =
+      `Rellená la tarjeta "${card.id}" (tipo: ${card.type}, título: "${card.title}") con datos reales ` +
+      `del negocio bajo RLS. Consultá la herramienta de datos correspondiente y luego actualizá la tarjeta ` +
+      `con manage_canvas_widgets (action="update", widget_id="${card.id}"). Mantené el mismo tipo de tarjeta. ` +
+      `Incluí el tag <update_card id="${card.id}"> VERBATIM en tu respuesta. ` +
+      `Si la tarjeta no corresponde a un dato real del negocio, pedí aclaración en vez de inventar.`;
+    handleSubmit(undefined, msg);
+  };
+
+  // Deselect the active card with Escape.
+  useEffect(() => {
+    if (!selectedCardId) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setSelectedCardId(null); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectedCardId]);
 
   // recalculateDepths + getDescendants moved to ./timelineReducer (used by the reducers).
   const getRootId = (nodeId: string): string => {
@@ -968,8 +1065,57 @@ function SandboxContent() {
             >
               <RefreshCw className="w-3.5 h-3.5" /> Reiniciar Canvas
             </button>
+            <button
+              onClick={() => setIsPaletteOpen(o => !o)}
+              disabled={isLoading}
+              title="Insertar una tarjeta del repertorio"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-indigo-500/15 hover:bg-indigo-500/25 text-indigo-300 border border-indigo-400/20 transition-all text-xs font-semibold disabled:opacity-40"
+            >
+              <Plus className="w-3.5 h-3.5" /> Card
+            </button>
           </div>
         </div>
+
+        {/* -- CARD REPERTOIRE PALETTE (1-click instant insert; sample data) -- */}
+        <AnimatePresence>
+          {isPaletteOpen && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setIsPaletteOpen(false)} />
+              <motion.div
+                initial={{ opacity: 0, y: -8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.18 }}
+                className="absolute right-4 top-full mt-2 z-50 w-[30rem] max-w-[90vw] rounded-2xl bg-[#0E0E12]/95 backdrop-blur-2xl border border-white/10 shadow-2xl p-3"
+              >
+                <div className="flex items-center justify-between px-1 pb-2 mb-1 border-b border-white/5">
+                  <span className="text-[11px] font-bold text-gray-400 uppercase tracking-widest">Repertorio de Tarjetas</span>
+                  <span className="text-[10px] text-gray-600">datos de muestra · editá luego con IA</span>
+                </div>
+                <div className="grid grid-cols-2 gap-1.5 max-h-[18rem] overflow-y-auto [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-white/15 [&::-webkit-scrollbar-track]:bg-transparent">
+                  {CARD_TEMPLATES.map(tpl => {
+                    const Icon = TEMPLATE_ICONS[tpl.icon] ?? Activity;
+                    return (
+                      <button
+                        key={tpl.id}
+                        onClick={() => handleInsertTemplate(tpl)}
+                        className="flex items-start gap-2.5 text-left p-2.5 rounded-xl bg-white/[0.03] hover:bg-indigo-500/15 border border-white/5 hover:border-indigo-400/30 transition-all"
+                      >
+                        <div className="p-1.5 rounded-lg bg-white/5 text-indigo-400 border border-white/5 shrink-0">
+                          <Icon className="w-3.5 h-3.5" />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-xs font-semibold text-white truncate">{tpl.label}</div>
+                          <div className="text-[10px] text-gray-500 leading-snug line-clamp-2">{tpl.description}</div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </motion.div>
+            </>
+          )}
+        </AnimatePresence>
 
         {/* Scrollable Git Graph Grid wrapped in collapsible container */}
         <AnimatePresence initial={false}>
@@ -1168,7 +1314,7 @@ function SandboxContent() {
       {/* -- MAIN CANVAS (GRID OF DRAGGABLE CARDS) -- */}
       <div className="flex-1 px-8 pt-3 pb-8 relative overflow-y-auto">
         <LayoutGroup>
-          <div className="w-full h-full relative min-h-[636px]" ref={canvasRef}>
+          <div className="w-full h-full relative min-h-[636px]" ref={canvasRef} onClick={() => setSelectedCardId(null)}>
             {/* Background grid helper visible only when dragging (enclosed inside the dashed box area) */}
             <div
               className={`absolute inset-x-8 top-3 bottom-12 rounded-[2rem] transition-opacity duration-300 pointer-events-none ${
@@ -1296,9 +1442,17 @@ function SandboxContent() {
                       setDraggingCardId(card.id);
                     }}
                     onDragEnd={(e, info) => {
+                      // Gate click-vs-drag: Framer fires a synthetic click after a drag;
+                      // mark it so the onClick below ignores drags (>5px) and only selects on a tap.
+                      wasCardDraggedRef.current = Math.abs(info.offset.x) + Math.abs(info.offset.y) > 5;
                       // Al soltar, disparamos la actualización del estado y el nodo en la línea de tiempo.
                       handleDragEnd(card.id, e, info, clampedX, clampedY);
                       setDraggingCardId(null);
+                    }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (wasCardDraggedRef.current) { wasCardDraggedRef.current = false; return; }
+                      setSelectedCardId(prev => (prev === card.id ? null : card.id));
                     }}
                     // WARNING (Known Issue): Aquí se encuentra el fallo documentado. 
                     // Tener x, y, width, height forzados en `style` pisa el cálculo de interpolación
@@ -1311,7 +1465,11 @@ function SandboxContent() {
                       data-role="inner-card"
                       animate={resizingCardId === card.id ? {} : { scale: currentScale, width: unscaledWidth, height: unscaledHeight }}
                       style={{ scale: currentScale, transformOrigin: 'top left', width: unscaledWidth, height: unscaledHeight }}
-                      className="relative rounded-[2rem] bg-[#111113]/90 border border-white/10 shadow-2xl backdrop-blur-2xl p-6 select-none overflow-hidden transition-colors"
+                      className={`relative rounded-[2rem] bg-[#111113]/90 border shadow-2xl backdrop-blur-2xl p-6 select-none overflow-hidden transition-colors ${
+                        selectedCardId === card.id
+                          ? "border-indigo-400/70 ring-2 ring-indigo-400/50"
+                          : "border-white/10"
+                      }`}
                     >
                     {/* Background glow according to security level */}
                     {card.zoom === 'micro' && (
@@ -1336,19 +1494,29 @@ function SandboxContent() {
                         </div>
                       </div>
 
-                      {/* Zoom Controls */}
-                      <button
-                        onClick={() => handleToggleZoom(card.id)}
-                        className="p-2 rounded-xl bg-white/5 border border-white/5 hover:bg-white/10 transition-all text-gray-400 hover:text-white"
-                      >
-                        {card.zoom === 'macro' ? (
-                          <ChevronDown className="w-3.5 h-3.5" />
-                        ) : card.zoom === 'meso' ? (
-                          <ChevronUp className="w-3.5 h-3.5" />
-                        ) : (
-                          <X className="w-3.5 h-3.5" />
-                        )}
-                      </button>
+                      {/* Card actions: fill-with-data (agent) + zoom. stopPropagation so they don't toggle selection. */}
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleFillWithData(card); }}
+                          disabled={isLoading}
+                          title="Rellenar con datos reales (consulta RLS)"
+                          className="p-2 rounded-xl bg-white/5 border border-white/5 hover:bg-indigo-500/20 hover:text-indigo-300 transition-all text-gray-400 disabled:opacity-30"
+                        >
+                          <Database className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleToggleZoom(card.id); }}
+                          className="p-2 rounded-xl bg-white/5 border border-white/5 hover:bg-white/10 transition-all text-gray-400 hover:text-white"
+                        >
+                          {card.zoom === 'macro' ? (
+                            <ChevronDown className="w-3.5 h-3.5" />
+                          ) : card.zoom === 'meso' ? (
+                            <ChevronUp className="w-3.5 h-3.5" />
+                          ) : (
+                            <X className="w-3.5 h-3.5" />
+                          )}
+                        </button>
+                      </div>
                     </div>
 
                     {/* Card Body Renderers */}
@@ -1446,6 +1614,19 @@ function SandboxContent() {
               </div>
             );
           })()}
+          {selectedCardId && activeNode?.activeCards[selectedCardId] && (
+            <div className="flex items-center gap-2 mb-2 px-3 py-1.5 rounded-xl bg-indigo-500/15 border border-indigo-400/25 text-xs text-indigo-200 w-fit">
+              <Sparkles className="w-3.5 h-3.5 shrink-0" />
+              <span>Modificando <b>{activeNode.activeCards[selectedCardId].title}</b> — escribí el cambio</span>
+              <button
+                onClick={() => setSelectedCardId(null)}
+                title="Deseleccionar (Esc)"
+                className="ml-1 p-0.5 rounded hover:bg-white/10"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          )}
           <form onSubmit={handleSubmit} className="relative flex items-center group">
             {/* Glowing magic ambient */}
             <div className="absolute inset-0 bg-gradient-to-r from-indigo-500/10 to-purple-500/10 blur-xl opacity-0 group-hover:opacity-100 transition-opacity rounded-[2rem]" />
@@ -1459,7 +1640,9 @@ function SandboxContent() {
                 value={inputValue}
                 onChange={(e) => setInputValue(e.target.value)}
                 placeholder={
-                  activeNode && !Object.values(nodes).some(n => n.parentId === activeNode.id)
+                  selectedCardId
+                    ? "Decile al agente qué cambiar en la tarjeta seleccionada..."
+                    : activeNode && !Object.values(nodes).some(n => n.parentId === activeNode.id)
                     ? "Colaborar en la línea activa..."
                     : "Crear bifurcación en la línea temporal..."
                 }
