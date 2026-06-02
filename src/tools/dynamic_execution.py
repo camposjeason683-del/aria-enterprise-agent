@@ -19,7 +19,6 @@ import textwrap
 from typing import Any
 from datetime import datetime
 
-import httpx
 from src.infra.logger import log_error, log_info
 
 
@@ -174,55 +173,30 @@ async def execute_safe_read_query(sql_query: str) -> dict:
             )
         }
 
-    # 2. Execute via Supabase REST (rpc endpoint for raw SQL)
-    supabase_url = os.environ.get("SUPABASE_URL", "").rstrip("/")
-    service_key = os.environ.get("SUPABASE_SERVICE_KEY", "")
-
-    if not supabase_url or not service_key:
-        return {"error": "Supabase credentials not configured in environment."}
-
-    rpc_url = f"{supabase_url}/rest/v1/rpc/execute_read_query"
-    headers = {
-        "apikey": service_key,
-        "Authorization": f"Bearer {service_key}",
-        "Content-Type": "application/json",
-    }
-    payload = {"query_text": sql_query}
-
+    # 2. Execute under the tenant's RLS via the SECURITY INVOKER RPC exec_safe_read
+    #    (migrations/0004). The tenant client carries the user's JWT, so even this
+    #    LLM-authored SQL can only ever read the caller's tenant rows.
     try:
-        async with httpx.AsyncClient(timeout=15.0) as http:
-            resp = await http.post(rpc_url, headers=headers, json=payload)
+        from src.infra.db import get_supabase
 
-        if resp.status_code == 200:
-            rows = resp.json()
-            if not isinstance(rows, list):
-                rows = [rows]
-            truncated = len(rows) > _SQL_MAX_ROWS
-            result_rows = rows[:_SQL_MAX_ROWS]
-            log_info(
-                f"execute_safe_read_query: returned {len(result_rows)} rows",
-                truncated=truncated,
-            )
-            return {
-                "rows": result_rows,
-                "row_count": len(result_rows),
-                "truncated": truncated,
-            }
-        else:
-            log_error(
-                f"execute_safe_read_query: HTTP {resp.status_code}",
-                body=resp.text[:300],
-            )
-            # Fallback: direct pg connection is not available here, so surface error
-            return {
-                "error": (
-                    f"Supabase RPC returned HTTP {resp.status_code}. "
-                    f"Detail: {resp.text[:300]}. "
-                    "NOTE: The RPC function `execute_read_query` may not exist yet in the database. "
-                    "Ask the user to run the migration SQL that creates this function."
-                )
-            }
-
+        client = await get_supabase()
+        res = await client.rpc("exec_safe_read", {"q": sql_query})
+        rows = res.data
+        if rows is None:
+            rows = []
+        elif not isinstance(rows, list):
+            rows = [rows]
+        truncated = len(rows) > _SQL_MAX_ROWS
+        result_rows = rows[:_SQL_MAX_ROWS]
+        log_info(
+            f"execute_safe_read_query: returned {len(result_rows)} rows",
+            truncated=truncated,
+        )
+        return {
+            "rows": result_rows,
+            "row_count": len(result_rows),
+            "truncated": truncated,
+        }
     except Exception as exc:
         log_error(f"execute_safe_read_query: Exception: {exc}")
         return {"error": f"Query execution error: {str(exc)}"}

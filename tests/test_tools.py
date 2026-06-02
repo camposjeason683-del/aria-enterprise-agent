@@ -3,7 +3,8 @@ ARIA-OS: Tool and Agent Unit Tests
 Tests the deterministic functions without LLM hallucinations.
 """
 import pytest
-from src.tools.database import calc_production_detected, get_stock_alerts
+from src.tools.calculations import calc_production_detected
+from src.tools.database import get_stock_alerts
 from src.tools.sales import calc_avg_order_value, query_revenue_summary
 from src.callbacks.validation import math_validator
 

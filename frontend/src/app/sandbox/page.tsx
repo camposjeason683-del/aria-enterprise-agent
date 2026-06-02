@@ -2,6 +2,7 @@
 
 import React, { useState, useRef, useEffect, useMemo } from "react";
 import { CopilotKit, useCopilotChatInternal } from "@copilotkit/react-core";
+import { getToken } from "@/lib/auth";
 import { motion, AnimatePresence, LayoutGroup } from "motion/react";
 import {
   Zap,
@@ -28,6 +29,21 @@ import {
   FileText,
   RotateCcw
 } from "lucide-react";
+import {
+  appendTurn,
+  forkTurn,
+  mergeNodes,
+  breakNode,
+  revertTo,
+  getActivePath,
+  compileMessagesForPath,
+  makeSerializable,
+  parseCardsFromMessage,
+} from "./timelineReducer";
+import type { CardState, TimelineNode, TimelineBranch } from "./timelineReducer";
+// Re-export the timeline types (moved to ./timelineReducer) for back-compat with
+// any external importer of this module.
+export type { CardState, TimelineNode, TimelineBranch } from "./timelineReducer";
 
 // Deterministic short hash from any string (for stable motion animation transitions)
 function contentHash(str: string): string {
@@ -38,60 +54,7 @@ function contentHash(str: string): string {
   return Math.abs(h).toString(36);
 }
 
-// Deep clone helper
-function deepClone<T>(obj: T): T {
-  return JSON.parse(JSON.stringify(obj));
-}
-
-// -- DATA MODELS --
-
-export interface CardState {
-  id: string;
-  title: string;
-  type: 'kpi' | 'saif-tracker' | 'inventory';
-  macroData: {
-    value: string;
-    change?: string;
-    trend?: 'up' | 'down' | 'neutral';
-    subtitle?: string;
-  };
-  mesoData: {
-    chartData?: { label: string; value: number }[];
-    bullets?: string[];
-    status?: string;
-  };
-  microData: {
-    tableHeaders?: string[];
-    tableRows?: string[][];
-    sqlQuery?: string;
-    executionLogs?: string[];
-    safetyScore?: number; // 0 - 100
-  };
-  position: { x: number; y: number };
-  zoom: 'macro' | 'meso' | 'micro';
-  updatedInTurn: string;
-  changeSummary: string;
-  scale?: number;
-}
-
-export interface TimelineNode {
-  id: string;
-  parentId: string | null;
-  mergeParentId?: string | null;
-  userMessage: any;
-  assistantMessages: any[];
-  branchId: string;
-  depth: number;
-  activeCards: Record<string, CardState>;
-}
-
-export interface TimelineBranch {
-  id: string;
-  name: string;
-  row: number;
-  color: string;
-  forkParentId?: string;
-}
+// -- DATA MODELS (CardState / TimelineNode / TimelineBranch moved to ./timelineReducer) --
 
 interface SecurityConfirmation {
   actionName: string;
@@ -99,72 +62,7 @@ interface SecurityConfirmation {
   onConfirm: () => void;
 }
 
-// -- PARSER FOR GENERATIVE UI --
-function parseCardsFromMessage(content: string, prevCards: Record<string, CardState>, turnId: string): Record<string, CardState> {
-  const nextCards = { ...prevCards };
-
-  // 1. Parse create_card tags
-  const createRegex = /<create_card\s+id="([^"]+)"\s+type="([^"]+)"\s*>([\s\S]*?)<\/create_card>/g;
-  let match;
-  while ((match = createRegex.exec(content)) !== null) {
-    const id = match[1];
-    const type = match[2] as any;
-    const bodyStr = match[3].trim();
-    try {
-      const parsed = JSON.parse(bodyStr);
-      if (parsed.title && parsed.macroData) {
-        const index = Object.keys(nextCards).length;
-        nextCards[id] = {
-          id,
-          title: parsed.title,
-          type,
-          macroData: parsed.macroData,
-          mesoData: parsed.mesoData || {},
-          microData: parsed.microData || {},
-          position: parsed.position || {
-            x: (index % 3) * 360 + 32,
-            y: Math.floor(index / 3) * 280 + 12,
-          },
-          zoom: 'macro',
-          updatedInTurn: turnId,
-          changeSummary: parsed.changeSummary || 'Componente creado'
-        };
-      }
-    } catch (e) {
-      console.error("Failed to parse create_card content JSON", e);
-    }
-  }
-
-  // 2. Parse update_card tags
-  const updateRegex = /<update_card\s+id="([^"]+)"\s*>([\s\S]*?)<\/update_card>/g;
-  while ((match = updateRegex.exec(content)) !== null) {
-    const id = match[1];
-    const bodyStr = match[2].trim();
-    if (nextCards[id]) {
-      try {
-        const parsed = JSON.parse(bodyStr);
-        nextCards[id] = {
-          ...nextCards[id],
-          ...parsed,
-          id, // ensure ID stays same
-          updatedInTurn: turnId,
-          changeSummary: parsed.changeSummary || 'Datos actualizados'
-        };
-      } catch (e) {
-        console.error("Failed to parse update_card content JSON", e);
-      }
-    }
-  }
-
-  // 3. Parse delete_card tags
-  const deleteRegex = /<delete_card\s+id="([^"]+)"\s*\/>/g;
-  while ((match = deleteRegex.exec(content)) !== null) {
-    const id = match[1];
-    delete nextCards[id];
-  }
-
-  return nextCards;
-}
+// -- PARSER FOR GENERATIVE UI (parseCardsFromMessage moved to ./timelineReducer) --
 
 // Spaced out initial state to showcase 4D elements immediately
 const INITIAL_NODES: Record<string, TimelineNode> = {
@@ -217,49 +115,23 @@ const INITIAL_BRANCHES: TimelineBranch[] = [
 
 export default function SandboxPage() {
   return (
-    <CopilotKit runtimeUrl="/api/copilotkit">
+    <CopilotKit
+      runtimeUrl="/api/copilotkit"
+      headers={(): Record<string, string> => {
+        const t = getToken();
+        return t ? { Authorization: `Bearer ${t}` } : {};
+      }}
+    >
       <SandboxContent />
     </CopilotKit>
   );
 }
 
-// -- HELPER FUNCTIONS FOR TIMELINE --
-
-function getActivePath(activeNodeId: string | null, nodes: Record<string, TimelineNode>): TimelineNode[] {
-  if (!activeNodeId) return [];
-  const path: TimelineNode[] = [];
-  let current: TimelineNode | undefined = nodes[activeNodeId];
-  while (current) {
-    path.push(current);
-    current = current.parentId ? nodes[current.parentId] : undefined;
-  }
-  return path.reverse();
-}
-
-function compileMessagesForPath(path: TimelineNode[]): any[] {
-  const messages: any[] = [];
-  for (const node of path) {
-    messages.push(node.userMessage);
-    messages.push(...node.assistantMessages);
-  }
-  return messages;
-}
-
-function makeSerializable(messages: any[]): any[] {
-  return messages.map((m: any) => ({
-    id: m.id,
-    role: m.role,
-    content: m.content ?? "",
-    ...(m.type && { type: m.type }),
-    ...(m.name && { name: m.name }),
-    ...(m.toolCalls && { toolCalls: m.toolCalls }),
-    ...(m.toolCallId && { toolCallId: m.toolCallId }),
-  }));
-}
+// -- HELPER FUNCTIONS FOR TIMELINE (getActivePath/compileMessagesForPath/makeSerializable moved to ./timelineReducer) --
 
 // -- MAIN COMPONENT --
 function SandboxContent() {
-  const { messages, sendMessage, isLoading, setMessages } = useCopilotChatInternal();
+  const { messages, sendMessage, isLoading, setMessages, stopGeneration } = useCopilotChatInternal();
   const [inputValue, setInputValue] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -292,6 +164,7 @@ function SandboxContent() {
   }
   const [canvasSize, setCanvasSize] = useState({ width: 970, height: 636 });
   const [isTimelineOpen, setIsTimelineOpen] = useState(true);
+  const [chatMinimized, setChatMinimized] = useState(false);
   const [timelineModal, setTimelineModal] = useState<{
     type: 'fork' | 'merge' | 'break' | 'error' | 'revert';
     nodeAId: string;
@@ -302,10 +175,11 @@ function SandboxContent() {
 
   const [activeBranchId, setActiveBranchId] = useState<string>("main");
 
-  // Sync ref to prevent state loops
-  const isSwitchingBranch = useRef(false);
-
-  const colors = ['#6366F1', '#10B981', '#F43F5E', '#F59E0B', '#A855F7', '#06B6D4', '#EC4899'];
+  // Tracks the freshly-created node awaiting its assistant reply (the pending turn).
+  // The capture effect writes the streamed reply ONLY into this node — it never
+  // mutates tree structure. (Replaces the old isSwitchingBranch mutex + the
+  // `colors` array, now BRANCH_COLORS in ./timelineReducer.)
+  const pendingNodeIdRef = useRef<string | null>(null);
 
   // Initialization & LocalStorage Load
   useEffect(() => {
@@ -315,14 +189,15 @@ function SandboxContent() {
     const savedBranch = localStorage.getItem("sandbox_active_branch");
     if (savedNodes && savedBranches && savedActive) {
       try {
-        setNodes(JSON.parse(savedNodes));
+        const parsedNodes = JSON.parse(savedNodes);
+        const parsedActive = JSON.parse(savedActive);
+        setNodes(parsedNodes);
         setBranches(JSON.parse(savedBranches));
-        setActiveNodeId(JSON.parse(savedActive));
-        if (savedBranch) {
-          setActiveBranchId(JSON.parse(savedBranch));
-        } else {
-          setActiveBranchId("main");
-        }
+        setActiveNodeId(parsedActive);
+        setActiveBranchId(savedBranch ? JSON.parse(savedBranch) : "main");
+        // Push the restored node's path so the agent's context matches the tree
+        // (previously only loadDefaultState did this — a latent desync on reload).
+        pushMessagesForNode(parsedActive, parsedNodes);
       } catch (e) {
         console.error("Failed to load saved state, using fallback", e);
         loadDefaultState();
@@ -360,17 +235,22 @@ function SandboxContent() {
     }
   }, [shouldAnimateLayout]);
 
+  // The ONLY direction state flows: nodes -> messages. Derive CopilotKit's linear
+  // message list from a node's active path and push it. Never the reverse.
+  // Repositioning the active path also ends any in-flight capture: the pending turn
+  // no longer matches what we're showing. (handleSubmit sets a fresh pending id itself
+  // and does NOT go through here, so a new turn's capture is unaffected.)
+  const pushMessagesForNode = (nodeId: string | null, nodesMap: Record<string, TimelineNode>) => {
+    pendingNodeIdRef.current = null;
+    setMessages(makeSerializable(compileMessagesForPath(getActivePath(nodeId, nodesMap))));
+  };
+
   const loadDefaultState = () => {
     setNodes(INITIAL_NODES);
     setBranches(INITIAL_BRANCHES);
     setActiveNodeId('turn-2');
     setActiveBranchId('main');
-    
-    // Sync default messages to CopilotKit
-    const path = getActivePath('turn-2', INITIAL_NODES);
-    const msgs = compileMessagesForPath(path);
-    isSwitchingBranch.current = true;
-    setMessages(makeSerializable(msgs));
+    pushMessagesForNode('turn-2', INITIAL_NODES);
   };
 
   // LocalStorage save
@@ -393,145 +273,58 @@ function SandboxContent() {
     return Object.values(activeNode.activeCards).slice(0, 12);
   }, [activeNode]);
 
-  // Watch for messages change from CopilotKit to sync streaming responses
+  // Capture the streamed assistant reply into the PENDING node only.
+  //
+  // This is the inversion that fixes both bugs: the effect may ONLY copy the
+  // assistant text + cards into an already-existing, already-identified node. It
+  // never creates, renames, re-parents, re-branches, or moves the selection — so
+  // the linear `messages` array can no longer corrupt the tree. `nodes` is the
+  // single source of truth; `messages` is a derived, linear view of one path.
   useEffect(() => {
-    if (!messages || messages.length === 0 || isSwitchingBranch.current) {
-      isSwitchingBranch.current = false;
-      return;
-    }
+    const pendingId = pendingNodeIdRef.current;
+    if (!pendingId || !messages || messages.length === 0) return;
 
-    const activeTurns: any[] = [];
-    let currentTurn: any = null;
-
-    for (const msg of messages) {
-      if (msg.role === "user") {
-        if (currentTurn) activeTurns.push(currentTurn);
-        currentTurn = {
-          id: msg.id,
-          userMessage: msg,
-          assistantMessages: []
-        };
-      } else if (currentTurn && msg.role !== "system") {
-        currentTurn.assistantMessages.push(msg);
-      }
-    }
-    if (currentTurn) activeTurns.push(currentTurn);
-
-    let updated = false;
     setNodes(prev => {
-      let next = { ...prev };
-      
-      // Calculate current path before we rename
-      const currentPath: TimelineNode[] = [];
-      let currId = activeNodeId;
-      while (currId && prev[currId]) {
-        currentPath.push(prev[currId]);
-        currId = prev[currId].parentId;
+      const node = prev[pendingId];
+      if (!node) return prev; // node was reverted/removed mid-stream → drop the capture
+
+      // The pending turn is the LAST user message in the array (only one turn is ever
+      // in flight — handleSubmit blocks while isLoading). We additionally require it to
+      // be OUR turn: id match, or CONTENT match if CopilotKit/AG-UI re-stamps the id on
+      // the round-trip. The content guard also rejects the brief window right after
+      // setMessages(history) where the last user message is still an ancestor's —
+      // preventing a cross-turn mis-capture.
+      let userIdx = -1;
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if ((messages[i] as any).role === "user") { userIdx = i; break; }
       }
-      currentPath.reverse();
+      if (userIdx === -1) return prev;
+      const lastUser = messages[userIdx] as any;
+      if (lastUser.id !== pendingId && lastUser.content !== node.userMessage?.content) return prev;
 
-      let alignedActiveNodeId = activeNodeId;
+      // Everything after it (assistant + tool messages, never system) is this reply.
+      const assistant = messages.slice(userIdx + 1).filter((m: any) => m.role !== "system");
+      if (JSON.stringify(node.assistantMessages) === JSON.stringify(assistant)) return prev;
 
-      // Align IDs in tree with actual CopilotKit message IDs
-      for (let i = 0; i < activeTurns.length; i++) {
-        const turn = activeTurns[i];
-        const pathNode = currentPath[i];
-
-        if (pathNode && pathNode.id !== turn.id) {
-          const oldId = pathNode.id;
-          const newId = turn.id;
-
-          if (next[oldId]) {
-            const node = next[oldId];
-            
-            // Create new entry
-            next[newId] = {
-              ...node,
-              id: newId
-            };
-            
-            // Delete old entry
-            delete next[oldId];
-
-            // Update parentId and mergeParentId of any children in next
-            Object.keys(next).forEach(key => {
-              if (next[key].parentId === oldId) {
-                next[key] = { ...next[key], parentId: newId };
-              }
-              if (next[key].mergeParentId === oldId) {
-                next[key] = { ...next[key], mergeParentId: newId };
-              }
-            });
-
-            // Update alignedActiveNodeId if it matched
-            if (alignedActiveNodeId === oldId) {
-              alignedActiveNodeId = newId;
-            }
-
-            // Update our local currentPath array
-            pathNode.id = newId;
-            updated = true;
-          }
-        }
-      }
-
-      if (alignedActiveNodeId !== activeNodeId) {
-        setTimeout(() => setActiveNodeId(alignedActiveNodeId), 0);
-      }
-
-      // Sync turn values
-      for (const turn of activeTurns) {
-        const existing = next[turn.id];
-        if (existing) {
-          const assMsgStr = JSON.stringify(existing.assistantMessages);
-          const turnMsgStr = JSON.stringify(turn.assistantMessages);
-          if (assMsgStr !== turnMsgStr) {
-            const rawContent = turn.assistantMessages.map((m: any) => m.content).join('');
-            const parentCards = existing.parentId ? next[existing.parentId]?.activeCards || {} : {};
-            next[turn.id] = {
-              ...existing,
-              assistantMessages: turn.assistantMessages,
-              activeCards: parseCardsFromMessage(rawContent, parentCards, turn.id)
-            };
-            updated = true;
-          }
-        } else {
-          // Create node automatically
-          const turnIndex = activeTurns.findIndex(t => t.id === turn.id);
-          const prevTurn = turnIndex > 0 ? activeTurns[turnIndex - 1] : null;
-          const parentId = prevTurn ? prevTurn.id : null;
-          const parentNode = parentId ? next[parentId] : null;
-          const branchId = parentNode ? parentNode.branchId : 'main';
-          const depth = parentNode ? parentNode.depth + 1 : 0;
-          const rawContent = turn.assistantMessages.map((m: any) => m.content).join('');
-
-          next[turn.id] = {
-            id: turn.id,
-            parentId,
-            userMessage: turn.userMessage,
-            assistantMessages: turn.assistantMessages,
-            branchId,
-            depth,
-            activeCards: parseCardsFromMessage(rawContent, parentNode ? parentNode.activeCards : {}, turn.id)
-          };
-          updated = true;
-        }
-      }
-
-      return updated ? next : prev;
+      // Re-derive cards from the parent + the FULL current assistant text every time,
+      // so incomplete mid-stream JSON (skipped by the parser) converges cleanly.
+      const raw = assistant.map((m: any) => m.content ?? "").join("");
+      const parentCards = node.parentId ? (prev[node.parentId]?.activeCards ?? {}) : {};
+      return {
+        ...prev,
+        [pendingId]: {
+          ...node,
+          assistantMessages: assistant,
+          activeCards: parseCardsFromMessage(raw, parentCards, pendingId),
+        },
+      };
     });
-
-    // Auto-advance activeNodeId if we are at the parent of the latest turn
-    const latestTurn = activeTurns[activeTurns.length - 1];
-    if (latestTurn && activeNodeId !== latestTurn.id) {
-      const turnIndex = activeTurns.findIndex(t => t.id === latestTurn.id);
-      const prevTurn = turnIndex > 0 ? activeTurns[turnIndex - 1] : null;
-      if (prevTurn && prevTurn.id === activeNodeId) {
-        setTimeout(() => setActiveNodeId(latestTurn.id), 0);
-      }
-    }
-
-  }, [messages, activeNodeId]);
+    // NOTE: we do NOT release pendingNodeIdRef on !isLoading — isLoading is briefly
+    // false in the window after sendMessage() before generation starts, which would
+    // abandon the turn before the reply streams in. The ref is instead cleared when
+    // the active path is repositioned (pushMessagesForNode) or overwritten by the
+    // next handleSubmit — so a late-arriving reply always lands in the right node.
+  }, [messages]);
 
   // -- HANDLERS --
 
@@ -540,93 +333,45 @@ function SandboxContent() {
     const text = directText || inputValue;
     if (!text.trim() || isLoading) return;
 
-    const parent = activeNode;
-    const isLeaf = parent ? !Object.values(nodes).some(n => n.parentId === parent.id) : true;
-    
-    let branchId = activeBranchId;
-    let parentId = parent ? parent.id : null;
-    const nextNodeId = 'turn-' + Date.now();
+    // Pure structural decision (append vs fork vs ghost). `nodes` is the source of
+    // truth; appendTurn returns the next tree + the id of the node it created.
+    const result = appendTurn(
+      { nodes, branches, activeNodeId, activeBranchId },
+      { text },
+    );
 
-    // Check if we need to fork (if we are in the past/not at a leaf, and submitting on the parent's branch)
-    if (parent) {
-      if (activeBranchId === parent.branchId && !isLeaf) {
-        const nextRow = Math.max(...branches.map(b => b.row), -1) + 1;
-        const color = colors[nextRow % colors.length];
-        const newBranchId = 'branch-' + Date.now();
-        const shortName = text.slice(0, 15) + (text.length > 15 ? '...' : '');
-        const newBranch: TimelineBranch = {
-          id: newBranchId,
-          name: `Rama: ${shortName}`,
-          row: nextRow,
-          color,
-          forkParentId: parent.id
-        };
-
-        setBranches(prev => [...prev, newBranch]);
-        branchId = newBranchId;
-        setActiveBranchId(newBranchId);
-      }
-    } else {
-      branchId = activeBranchId || 'main';
-    }
-
-    // Pre-create node in state
-    setNodes(prev => ({
-      ...prev,
-      [nextNodeId]: {
-        id: nextNodeId,
-        parentId,
-        userMessage: { id: nextNodeId, role: "user", content: text },
-        assistantMessages: [],
-        branchId,
-        depth: parent ? parent.depth + 1 : 0,
-        activeCards: parent ? deepClone(parent.activeCards) : {}
-      }
-    }));
-
+    // Apply the next tree state atomically.
+    setNodes(result.nodes);
+    setBranches(result.branches);
+    setActiveNodeId(result.activeNodeId);
+    setActiveBranchId(result.activeBranchId);
     setInputValue("");
-    setActiveNodeId(nextNodeId);
-    setActiveBranchId(branchId);
 
-    // Sync preceding messages before triggering sendMessage
-    const tempNodes = {
-      ...nodes,
-      [nextNodeId]: {
-        id: nextNodeId,
-        parentId,
-        userMessage: { id: nextNodeId, role: "user", content: text },
-        assistantMessages: [],
-        branchId,
-        depth: parent ? parent.depth + 1 : 0,
-        activeCards: parent ? deepClone(parent.activeCards) : {}
-      }
-    };
-    const path = getActivePath(nextNodeId, tempNodes);
-    // Remove the last turn from history before calling sendMessage, CopilotKit appends it automatically
-    const pathMsgsWithoutLast = compileMessagesForPath(path.slice(0, -1));
-    isSwitchingBranch.current = true;
-    setMessages(makeSerializable(pathMsgsWithoutLast));
+    // Route the assistant reply into THIS node (and only this node).
+    pendingNodeIdRef.current = result.newNodeId;
+
+    // Derive the linear context for the agent: the active path WITHOUT the new
+    // user turn (CopilotKit appends that itself). This is what makes a fork send
+    // its OWN branch path instead of main's — the fix for bug 1's agent context.
+    const path = getActivePath(result.newNodeId, result.nodes);
+    setMessages(makeSerializable(compileMessagesForPath(path.slice(0, -1))));
 
     try {
-      await sendMessage({
-        id: nextNodeId,
-        role: "user",
-        content: text,
-      });
+      await sendMessage({ id: result.newNodeId, role: "user", content: text });
     } catch (err) {
       console.error("Failed to send message", err);
     }
   };
 
   const handleCheckoutNode = (nodeId: string) => {
-    const path = getActivePath(nodeId, nodes);
-    const msgs = compileMessagesForPath(path);
-    isSwitchingBranch.current = true;
-    setMessages(makeSerializable(msgs));
+    if (!nodes[nodeId]) return;
+    // Switching while ARIA streams: cancel generation and abandon the pending turn
+    // so a late chunk can't land on the node we're leaving.
+    if (isLoading) stopGeneration();
+    pendingNodeIdRef.current = null;
     setActiveNodeId(nodeId);
-    if (nodes[nodeId]) {
-      setActiveBranchId(nodes[nodeId].branchId);
-    }
+    setActiveBranchId(nodes[nodeId].branchId);
+    pushMessagesForNode(nodeId, nodes);
   };
 
   const handleCheckoutBranch = (branchId: string) => {
@@ -639,29 +384,7 @@ function SandboxContent() {
     handleCheckoutNode(tipNode.id);
   };
 
-  const recalculateDepths = (nodesRecord: Record<string, TimelineNode>): Record<string, TimelineNode> => {
-    const nextNodes = deepClone(nodesRecord);
-    const roots = Object.values(nextNodes).filter(n => !n.parentId || !nextNodes[n.parentId]);
-    const visited = new Set<string>();
-
-    const assignDepth = (nodeId: string, currentDepth: number) => {
-      if (visited.has(nodeId)) return;
-      visited.add(nodeId);
-
-      if (nextNodes[nodeId]) {
-        nextNodes[nodeId].depth = currentDepth;
-        const children = Object.values(nextNodes).filter(n => n.parentId === nodeId);
-        children.forEach(child => {
-          assignDepth(child.id, currentDepth + 1);
-        });
-      }
-    };
-    roots.forEach(root => {
-      assignDepth(root.id, 0);
-    });
-
-    return nextNodes;
-  };
+  // recalculateDepths + getDescendants moved to ./timelineReducer (used by the reducers).
   const getRootId = (nodeId: string): string => {
     const visited = new Set<string>();
     let curr = nodes[nodeId];
@@ -695,28 +418,6 @@ function SandboxContent() {
       }
     }
     return false;
-  };
-
-  const getDescendants = (ancestorId: string, currentNodes: Record<string, TimelineNode>): string[] => {
-    const descendants: string[] = [];
-    const queue = [ancestorId];
-    const visited = new Set<string>();
-
-    while (queue.length > 0) {
-      const currId = queue.shift()!;
-      if (visited.has(currId)) continue;
-      visited.add(currId);
-
-      Object.values(currentNodes).forEach(n => {
-        if (n.parentId === currId || n.mergeParentId === currId) {
-          if (n.id !== ancestorId) {
-            descendants.push(n.id);
-            queue.push(n.id);
-          }
-        }
-      });
-    }
-    return Array.from(new Set(descendants));
   };
 
   const handleNodeDragEnd = (nodeId: string, event: any, info: any) => {
@@ -792,174 +493,44 @@ function SandboxContent() {
   };
 
   const executeFork = (nodeId: string) => {
-    const nodeA = nodes[nodeId];
-    if (!nodeA) return;
-
-    const newBranchId = 'branch-' + Date.now();
-    const nextRow = Math.max(...branches.map(b => b.row), -1) + 1;
-    const color = colors[nextRow % colors.length];
-    
-    const shortName = nodeA.userMessage.content.slice(0, 15) + (nodeA.userMessage.content.length > 15 ? '...' : '');
-    const newBranch: TimelineBranch = {
-      id: newBranchId,
-      name: `Rama: ${shortName}`,
-      row: nextRow,
-      color,
-      forkParentId: nodeId
-    };
-
-    setBranches(prev => [...prev, newBranch]);
-    setActiveBranchId(newBranchId);
-    setActiveNodeId(nodeId);
-
-    // Sync CopilotKit messages up to the parent node
-    const path = getActivePath(nodeId, nodes);
-    const msgs = compileMessagesForPath(path);
-    isSwitchingBranch.current = true;
-    setMessages(makeSerializable(msgs));
+    if (!nodes[nodeId]) return;
+    const result = forkTurn({ nodes, branches, activeNodeId, activeBranchId }, { nodeId });
+    setBranches(result.branches);
+    setActiveNodeId(result.activeNodeId);
+    setActiveBranchId(result.activeBranchId);
+    pushMessagesForNode(result.activeNodeId, result.nodes);
   };
 
   const executeMerge = (nodeAId: string, nodeBId: string) => {
-    const nodeA = nodes[nodeAId];
-    const nodeB = nodes[nodeBId];
-    if (!nodeA || !nodeB) return;
-
-    const branchA = branches.find(b => b.id === nodeA.branchId);
-    const branchB = branches.find(b => b.id === nodeB.branchId);
-    const nameA = branchA ? branchA.name : 'Desconocida';
-    const nameB = branchB ? branchB.name : 'Desconocida';
-
-    const mergeNodeId = 'merge-' + Date.now();
-    const mergedCards = deepClone(nodeB.activeCards);
-
-    Object.values(nodeA.activeCards).forEach(card => {
-      const activeCard = mergedCards[card.id];
-      if (!activeCard) {
-        mergedCards[card.id] = {
-          ...deepClone(card),
-          updatedInTurn: mergeNodeId,
-          changeSummary: `Fusión desde rama "${nameA}"`
-        };
-      } else {
-        const activeUpdateNode = nodes[activeCard.updatedInTurn];
-        const sourceUpdateNode = nodes[card.updatedInTurn];
-        const activeDepth = activeUpdateNode ? activeUpdateNode.depth : 0;
-        const sourceDepth = sourceUpdateNode ? sourceUpdateNode.depth : 0;
-
-        if (sourceDepth > activeDepth) {
-          mergedCards[card.id] = {
-            ...deepClone(card),
-            position: activeCard.position,
-            updatedInTurn: mergeNodeId,
-            changeSummary: `Fusión y actualización de datos desde rama "${nameA}"`
-          };
-        }
-      }
-    });
-
-    const newMergeNode: TimelineNode = {
-      id: mergeNodeId,
-      parentId: nodeB.id,
-      mergeParentId: nodeA.id,
-      branchId: nodeB.branchId,
-      depth: nodeB.depth + 1,
-      userMessage: {
-        id: mergeNodeId,
-        role: 'user',
-        content: `Fusión gestual: Incorporar "${nameA}" en "${nameB}"`
-      },
-      assistantMessages: [
-        {
-          id: 'asst-' + mergeNodeId,
-          role: 'assistant',
-          content: `Ramas fusionadas gestualmente. Se unió la línea temporal de "${nameA}" con "${nameB}".`
-        }
-      ],
-      activeCards: mergedCards
-    };
-
-    setNodes(prev => {
-      const next = {
-        ...prev,
-        [mergeNodeId]: newMergeNode
-      };
-      return recalculateDepths(next);
-    });
-
-    setActiveNodeId(mergeNodeId);
-
-    setTimeout(() => {
-      setNodes(currentNodes => {
-        const path = getActivePath(mergeNodeId, currentNodes);
-        const msgs = compileMessagesForPath(path);
-        isSwitchingBranch.current = true;
-        setMessages(makeSerializable(msgs));
-        return currentNodes;
-      });
-    }, 50);
+    if (!nodes[nodeAId] || !nodes[nodeBId]) return;
+    const result = mergeNodes({ nodes, branches, activeNodeId, activeBranchId }, { nodeAId, nodeBId });
+    setNodes(result.nodes);
+    setBranches(result.branches);
+    setActiveNodeId(result.activeNodeId);
+    setActiveBranchId(result.activeBranchId);
+    pushMessagesForNode(result.activeNodeId, result.nodes);
   };
 
   const executeBreak = (nodeId: string) => {
-    const nodeA = nodes[nodeId];
-    if (!nodeA) return;
-
-    setNodes(prev => {
-      const next = { ...prev };
-      next[nodeId] = {
-        ...next[nodeId],
-        parentId: null
-      };
-      return recalculateDepths(next);
-    });
-
-    setTimeout(() => {
-      setNodes(currentNodes => {
-        const path = getActivePath(activeNodeId, currentNodes);
-        const msgs = compileMessagesForPath(path);
-        isSwitchingBranch.current = true;
-        setMessages(makeSerializable(msgs));
-        return currentNodes;
-      });
-    }, 50);
+    if (!nodes[nodeId]) return;
+    const result = breakNode({ nodes, branches, activeNodeId, activeBranchId }, { nodeId });
+    setNodes(result.nodes);
+    // Active node is unchanged; re-derive its path against the new (re-rooted) tree.
+    pushMessagesForNode(result.activeNodeId, result.nodes);
   };
 
   const executeRevert = (ancestorId: string) => {
-    const ancestorNode = nodes[ancestorId];
-    if (!ancestorNode) return;
+    if (!nodes[ancestorId]) return;
+    // Cancel any in-flight generation so a late chunk can't write into a deleted node.
+    if (isLoading) stopGeneration();
+    pendingNodeIdRef.current = null;
 
-    const descendants = getDescendants(ancestorId, nodes);
-
-    setNodes(prev => {
-      const next = { ...prev };
-      descendants.forEach(id => {
-        delete next[id];
-      });
-      return recalculateDepths(next);
-    });
-
-    setBranches(prev => {
-      return prev.filter(b => {
-        if (b.id === 'main') return true;
-        const branchNodes = Object.values(nodes).filter(n => n.branchId === b.id);
-        const hasRemainingNodes = branchNodes.some(n => !descendants.includes(n.id));
-        const forkParentNotDeleted = b.forkParentId ? !descendants.includes(b.forkParentId) : false;
-        return hasRemainingNodes || forkParentNotDeleted;
-      });
-    });
-
-    setActiveNodeId(ancestorId);
-    setActiveBranchId(ancestorNode.branchId);
-
-    // Sync CopilotKit messages up to the reverted node
-    setTimeout(() => {
-      setNodes(currentNodes => {
-        const path = getActivePath(ancestorId, currentNodes);
-        const msgs = compileMessagesForPath(path);
-        isSwitchingBranch.current = true;
-        setMessages(makeSerializable(msgs));
-        return currentNodes;
-      });
-    }, 50);
+    const result = revertTo({ nodes, branches, activeNodeId, activeBranchId }, { ancestorId });
+    setNodes(result.nodes);
+    setBranches(result.branches);
+    setActiveNodeId(result.activeNodeId);
+    setActiveBranchId(result.activeBranchId);
+    pushMessagesForNode(result.activeNodeId, result.nodes);
   };
 
   const handleResizeStart = (cardId: string, startEvent: React.PointerEvent | PointerEvent) => {
@@ -1836,6 +1407,45 @@ function SandboxContent() {
       {/* -- BOTTOM INPUT BAR -- */}
       <div className="absolute bottom-8 w-full px-4 z-40 pointer-events-none flex justify-center">
         <div className="w-full max-w-3xl pointer-events-auto">
+          {/* -- AGENT RESPONSE PANEL (texto de ARIA; las cards van al canvas) -- */}
+          {(() => {
+            const lastAssistant = [...messages].reverse().find(
+              (m: any) => m.role === "assistant" && (m.content ?? "").trim()
+            );
+            const responseText = ((lastAssistant?.content as string) ?? "")
+              .replace(/<create_card[\s\S]*?<\/create_card>/g, "")
+              .replace(/<update_card[\s\S]*?<\/update_card>/g, "")
+              .replace(/<delete_card[^>]*\/>/g, "")
+              .trim();
+            if (!isLoading && !responseText) return null;
+            return (
+              <div className="relative mb-3 overflow-hidden rounded-[1.75rem] border border-white/15 bg-gradient-to-b from-white/[0.08] to-white/[0.02] shadow-[0_20px_50px_rgba(0,0,0,0.45)] ring-1 ring-inset ring-white/5 backdrop-blur-2xl">
+                {/* sheen superior — efecto cristal */}
+                <div className="pointer-events-none absolute inset-x-6 top-0 h-px bg-gradient-to-r from-transparent via-white/30 to-transparent" />
+                {/* header: marca + botón minimizar */}
+                <div className="flex items-center justify-between px-4 pt-3 pb-1.5">
+                  <div className="text-[10px] font-semibold uppercase tracking-wider text-indigo-300/80">
+                    ✦ ARIA
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setChatMinimized((m) => !m)}
+                    aria-label={chatMinimized ? "Expandir" : "Minimizar"}
+                    title={chatMinimized ? "Expandir" : "Minimizar"}
+                    className="rounded-md p-1 text-white/40 transition-colors hover:bg-white/10 hover:text-white/80"
+                  >
+                    {chatMinimized ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                  </button>
+                </div>
+                {/* contenido: crece hasta ~8 líneas, luego scroll con barra custom */}
+                {!chatMinimized && (
+                  <div className="max-h-[14em] overflow-y-auto whitespace-pre-wrap px-4 pb-3.5 text-sm leading-relaxed text-white/85 [scrollbar-color:rgba(255,255,255,0.18)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-white/20 [&::-webkit-scrollbar-thumb:hover]:bg-white/35 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar]:w-1.5">
+                    {responseText || <span className="text-white/40">Pensando…</span>}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
           <form onSubmit={handleSubmit} className="relative flex items-center group">
             {/* Glowing magic ambient */}
             <div className="absolute inset-0 bg-gradient-to-r from-indigo-500/10 to-purple-500/10 blur-xl opacity-0 group-hover:opacity-100 transition-opacity rounded-[2rem]" />
