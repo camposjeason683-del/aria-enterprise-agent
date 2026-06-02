@@ -32,6 +32,7 @@ from src.tools.calculations import (
     calc_reorder_point,
     calc_sales_forecast,
 )
+from src.tools.forecasting import forecast_sales
 from src.tools.database import (
     compare_stock_periods,
     get_stock_alerts,
@@ -125,6 +126,7 @@ _NODE_TOOLS: dict[str, List[Callable]] = {
         rank_products_by_real_profitability,
         estimate_demand_elasticity,
         optimize_restock_with_budget,
+        forecast_sales,
         execute_safe_read_query,
         execute_python_script,
         manage_ham_memory,
@@ -147,6 +149,7 @@ _NODE_TOOLS: dict[str, List[Callable]] = {
     ],
     "demand": [
         calc_sales_forecast,
+        forecast_sales,
         calc_reorder_point,
         execute_safe_read_query,
         execute_python_script,
@@ -182,6 +185,7 @@ _NODE_TOOLS: dict[str, List[Callable]] = {
         classify_product_lifecycle,
         calculate_stockout_risk_scores,
         optimize_restock_with_budget,
+        forecast_sales,
         execute_safe_read_query,
         execute_python_script,
         manage_ham_memory,

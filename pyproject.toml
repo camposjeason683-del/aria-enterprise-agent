@@ -15,6 +15,13 @@ dependencies = [
     "weasyprint>=62.0",
     "python-dotenv>=1.0.0",
     "python-jose[cryptography]>=3.3.0",
+    # Forecasting (Tier 1, BQML-free): statistical models for the data-science
+    # specialist's demand forecasting. statsmodels is pure scientific-Python (no
+    # numba) → robust wheels on both py3.11 (prod image) and py3.14 (local).
+    "statsmodels>=0.14",
+    "numpy>=1.26",
+    "pandas>=2.0",
+    "scipy>=1.11",
 ]
 
 [project.optional-dependencies]
