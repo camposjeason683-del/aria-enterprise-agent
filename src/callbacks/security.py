@@ -132,6 +132,9 @@ async def validate_tool_params(tool, args, tool_context):
     if "top_n" in args:
         args["top_n"] = min(int(args.get("top_n", 20)), 50)
 
+    if "forecast_days" in args:
+        args["forecast_days"] = min(int(args.get("forecast_days", 30)), 90)
+
     return None
 
 
