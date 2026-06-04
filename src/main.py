@@ -165,6 +165,15 @@ async def timing_middleware(request: Request, call_next):
     return response
 
 
+# ─── Health ──────────────────────────────────────────────────────────
+@app.get("/health")
+async def health():
+    """E3: liveness probe (was 404). Used by Render/Cloud Run health checks —
+    deliberately unauthenticated and dependency-free so it stays green during a DB
+    blip (the kill switch / readiness is a separate concern)."""
+    return {"status": "ok"}
+
+
 # ─── Kill Switch ─────────────────────────────────────────────────────
 class KillSwitchUnavailable(Exception):
     """H4: raised when the kill-switch config can't be READ (vs. an actual 'off').
