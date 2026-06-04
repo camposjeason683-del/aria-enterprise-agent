@@ -3,9 +3,11 @@ ARIA-OS: Strategic Tools (FunctionTools)
 Tools for the highest level agent: gathering cross-department data,
 simulating impact, and submitting proposals for human approval.
 """
+import asyncio
 from typing import Optional
 from datetime import datetime
 from src.infra.db import get_supabase
+from src.tools.ledger_common import latest_ledger_date
 from src.tools.sales import query_revenue_summary
 from src.tools.finance import calc_profit_loss
 
@@ -14,8 +16,7 @@ async def gather_full_business_snapshot() -> dict:
     client = await get_supabase()
     
     # Fetch the latest available date in daily_inventory_ledger to handle stale data
-    date_res = await client.table("daily_inventory_ledger").select("date").order("date", desc=True).limit(1).execute()
-    latest_date = date_res.data[0]["date"] if date_res.data else datetime.now().strftime("%Y-%m-%d")
+    latest_date = await latest_ledger_date(client) or datetime.now().strftime("%Y-%m-%d")
     
     # Inventory
     inv_res = await client.table("daily_inventory_ledger").select("stock_end_of_day").eq("date", latest_date).execute()
@@ -272,9 +273,8 @@ async def analyze_supply_chain_bottlenecks() -> dict:
     client = await get_supabase()
     
     # Obtener la fecha más reciente con datos en el ledger
-    date_res = await client.table("daily_inventory_ledger").select("date").order("date", desc=True).limit(1).execute()
-    if date_res.data:
-        target_date_str = date_res.data[0]["date"]
+    target_date_str = await latest_ledger_date(client)
+    if target_date_str:
         from datetime import datetime as dt
         target_date = dt.strptime(target_date_str, "%Y-%m-%d").date()
         prev_date_str = (target_date - timedelta(days=1)).strftime("%Y-%m-%d")
@@ -403,8 +403,7 @@ async def predict_stockouts_and_repurchase() -> dict:
     client = await get_supabase()
     
     # Fetch the latest available date in daily_inventory_ledger to handle stale data
-    date_res = await client.table("daily_inventory_ledger").select("date").order("date", desc=True).limit(1).execute()
-    target_date = date_res.data[0]["date"] if date_res.data else datetime.now().strftime("%Y-%m-%d")
+    target_date = await latest_ledger_date(client) or datetime.now().strftime("%Y-%m-%d")
     
     inv_res = await client.table("daily_inventory_ledger").select(
         "product_id, product_name, stock_end_of_day, sales_velocity, date"
@@ -533,8 +532,7 @@ async def detect_dead_stock_and_rebalance() -> dict:
     client = await get_supabase()
     
     # Fetch the latest available date in daily_inventory_ledger to handle stale data
-    date_res = await client.table("daily_inventory_ledger").select("date").order("date", desc=True).limit(1).execute()
-    target_date = date_res.data[0]["date"] if date_res.data else datetime.now().strftime("%Y-%m-%d")
+    target_date = await latest_ledger_date(client) or datetime.now().strftime("%Y-%m-%d")
     
     inv_res = await client.table("daily_inventory_ledger").select(
         "product_id, product_name, stock_end_of_day, sales_velocity"
@@ -892,9 +890,8 @@ async def batch_purchase_orders() -> dict:
     from datetime import timedelta
     client = await get_supabase()
     
-    date_res = await client.table("daily_inventory_ledger").select("date").order("date", desc=True).limit(1).execute()
-    if date_res.data:
-        target_date_str = date_res.data[0]["date"]
+    target_date_str = await latest_ledger_date(client)
+    if target_date_str:
         from datetime import datetime as dt
         target_date = dt.strptime(target_date_str, "%Y-%m-%d").date()
         prev_date_str = (target_date - timedelta(days=1)).strftime("%Y-%m-%d")
@@ -1187,9 +1184,8 @@ async def dynamic_pricing_for_scarcity() -> dict:
     from src.tools.analytics import estimate_demand_elasticity
     client = await get_supabase()
 
-    date_res = await client.table("daily_inventory_ledger").select("date").order("date", desc=True).limit(1).execute()
-    if date_res.data:
-        target_date_str = date_res.data[0]["date"]
+    target_date_str = await latest_ledger_date(client)
+    if target_date_str:
         from datetime import datetime as dt
         target_date = dt.strptime(target_date_str, "%Y-%m-%d").date()
         prev_date_str = (target_date - timedelta(days=1)).strftime("%Y-%m-%d")
@@ -1469,10 +1465,22 @@ async def execute_proactive_sweep_auto() -> dict:
     Llama a esta herramienta de forma obligatoria durante el barrido proactivo.
     """
     results = {}
-    
+
+    # The three analyses below are independent, read-only computations (verified:
+    # none of them writes). Run them concurrently so the sweep's wall-clock is the
+    # slowest single analysis instead of their sum. The submit_proposal writes stay
+    # sequential (in block order) so the proposals table sees no concurrent writes.
+    reorder_res, dead_res, pricing_res = await asyncio.gather(
+        batch_purchase_orders(),
+        detect_dead_stock_and_rebalance(),
+        dynamic_pricing_for_scarcity(),
+        return_exceptions=True,
+    )
+
     # 1. Run Reabastecimiento (Replenishment)
     try:
-        reorder_res = await batch_purchase_orders()
+        if isinstance(reorder_res, Exception):
+            raise reorder_res
         opps = reorder_res.get("batching_opportunities", [])
         if opps:
             # Flatten items for the DB JSON field
@@ -1543,7 +1551,8 @@ async def execute_proactive_sweep_auto() -> dict:
         
     # 2. Run Liquidación de Stock (Clearance)
     try:
-        dead_res = await detect_dead_stock_and_rebalance()
+        if isinstance(dead_res, Exception):
+            raise dead_res
         alerts = dead_res.get("dead_stock_alerts", [])
         if alerts:
             items_list = []
@@ -1616,7 +1625,8 @@ async def execute_proactive_sweep_auto() -> dict:
 
     # 3. Run Ajuste de Precios Defensivo por Escasez (Dynamic Pricing)
     try:
-        pricing_res = await dynamic_pricing_for_scarcity()
+        if isinstance(pricing_res, Exception):
+            raise pricing_res
         recs = pricing_res.get("pricing_recommendations", [])
         # Filter only products where a price increase is actually recommended (> 0%)
         active_recs = [r for r in recs if r.get("aumento_precio_pct", 0) > 0]
