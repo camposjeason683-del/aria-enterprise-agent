@@ -8,6 +8,8 @@ import json
 import ast
 import re
 import asyncio
+import shutil
+import subprocess
 from typing import List, Any, Dict
 from google.genai import Client
 from src.infra.logger import log_info, log_error
@@ -167,7 +169,7 @@ Responde ÚNICAMENTE con el bloque JSON, sin markdown, sin texto adicional alred
     
     try:
         response = client.models.generate_content(
-            model="gemini-3.5-flash",
+            model="gemini-2.0-flash",  # was the fictitious 'gemini-3.5-flash'
             contents=prompt,
             config={"response_mime_type": "application/json", "temperature": 0.1}
         )
@@ -223,7 +225,36 @@ Responde ÚNICAMENTE con el bloque JSON, sin markdown, sin texto adicional alred
             
         with open(run_path, "w", encoding="utf-8") as f:
             f.write(python_code)
-            
+
+        # E2: smoke-validate the generated skill so a runtime-broken one (e.g. an
+        # unguarded int(None) on a missing param) is never persisted to compete with —
+        # and break — the real tools. Run it with EMPTY args; a robust skill must
+        # handle its defaults. An unhandled Python Traceback = a code bug → discard.
+        try:
+            proc = subprocess.run(
+                ["python3", run_path],
+                input="{}",
+                capture_output=True,
+                text=True,
+                timeout=20,
+                cwd=_REPO_ROOT,
+                env={**os.environ, "PYTHONPATH": _REPO_ROOT},
+            )
+            if "Traceback (most recent call last)" in (proc.stderr or ""):
+                log_error(
+                    f"Skill Synthesizer: skill '{skill_name}' crashed on smoke-run "
+                    f"(unhandled exception) — discarding. Stderr: {(proc.stderr or '')[:200]}",
+                    agent="synthesizer",
+                )
+                shutil.rmtree(target_dir, ignore_errors=True)
+                return False
+        except subprocess.TimeoutExpired:
+            log_error(f"Skill Synthesizer: skill '{skill_name}' smoke-run timed out — discarding.", agent="synthesizer")
+            shutil.rmtree(target_dir, ignore_errors=True)
+            return False
+        except Exception as smoke_err:
+            log_error(f"Skill Synthesizer: smoke-run error for '{skill_name}': {smoke_err}", agent="synthesizer")
+
         log_info(f"🔥 Skill Synthesizer: Successfully created dynamic skill '{skill_name}' at {target_dir}!", agent="synthesizer")
         return True
         
