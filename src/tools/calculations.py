@@ -175,8 +175,11 @@ async def calc_sales_forecast(
     product_name: str,
     forecast_days: int = 30,
 ) -> dict:
-    """Project future sales based on historical velocity.
-    Formula: Average_Daily_Sales × Forecast_Days
+    """Quick LINEAR sales projection (Average_Daily_Sales × Forecast_Days).
+
+    NOTE: coarse point estimate only. For a real demand forecast with seasonality
+    and confidence intervals, prefer `forecast_sales` (statistical SARIMAX /
+    Holt-Winters). Keep this only for a fast back-of-the-envelope number.
 
     Args:
         product_name: Name of the product.
