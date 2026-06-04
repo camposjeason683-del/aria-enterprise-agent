@@ -10,10 +10,10 @@ async def calc_gross_margin(product_name: str) -> dict:
     """Calculate the theoretical gross margin for a given product."""
     client = await get_supabase()
     # Ideally, products table would have a cost column.
-    # We will simulate the cost as 60% of base_price for this enterprise demo
+    # We will simulate the cost as 60% of price for this enterprise demo
     res = (
         await client.table("products")
-        .select("name, base_price")
+        .select("name, price")
         .ilike("name", f"%{product_name}%")
         .limit(1)
         .execute()
@@ -23,7 +23,7 @@ async def calc_gross_margin(product_name: str) -> dict:
         return {"error": f"No product found matching {product_name}"}
         
     p = res.data[0]
-    price = float(p.get("base_price") or 0)
+    price = float(p.get("price") or 0)
     cost = round(price * 0.6, 2)
     margin = price - cost
     margin_percent = round((margin / price) * 100, 2) if price > 0 else 0
@@ -62,13 +62,13 @@ async def query_price_history(product_name: str) -> dict:
     """Mock query for price changes."""
     # Since we lack a price history table, we return the current price
     client = await get_supabase()
-    res = await client.table("products").select("name, base_price").ilike("name", f"%{product_name}%").limit(1).execute()
+    res = await client.table("products").select("name, price").ilike("name", f"%{product_name}%").limit(1).execute()
     
     if not res.data:
         return {"error": "Product not found"}
         
     p = res.data[0]
-    price = float(p.get("base_price") or 0)
+    price = float(p.get("price") or 0)
     
     return {
         "product": p["name"],

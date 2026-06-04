@@ -598,7 +598,7 @@ async def detect_dead_stock_and_rebalance() -> dict:
         for i in range(0, len(unique_product_ids), chunk_size):
             chunk = unique_product_ids[i:i + chunk_size]
             try:
-                prod_res = await client.table("products").select("id, name, sku, price, base_price").in_("id", chunk).execute()
+                prod_res = await client.table("products").select("id, name, sku, price").in_("id", chunk).execute()
                 for p in (prod_res.data or []):
                     prod_map[str(p["id"])] = p
             except Exception as e:
@@ -623,7 +623,7 @@ async def detect_dead_stock_and_rebalance() -> dict:
             except (ValueError, TypeError):
                 selling_price = 0.0
 
-        cost_price = prod.get("base_price")
+        cost_price = prod.get("price")  # B: products has no separate cost column; use price (real) as the cost proxy (was the non-existent base_price → always None → silent zero)
         if cost_price is None:
             cost_price = 0.0
         else:
@@ -931,7 +931,7 @@ async def batch_purchase_orders() -> dict:
         for i in range(0, len(product_ids), chunk_size):
             chunk = product_ids[i:i + chunk_size]
             try:
-                prod_res = await client.table("products").select("id, name, sku, price, base_price").in_("id", chunk).execute()
+                prod_res = await client.table("products").select("id, name, sku, price").in_("id", chunk).execute()
                 for p in (prod_res.data or []):
                     prod_map[str(p["id"])] = p
             except Exception as e:
@@ -1031,7 +1031,7 @@ async def batch_purchase_orders() -> dict:
             except (ValueError, TypeError):
                 selling_price = 0.0
                 
-        cost_price = prod.get("base_price")
+        cost_price = prod.get("price")  # B: products has no separate cost column; use price (real) as the cost proxy (was the non-existent base_price → always None → silent zero)
         if cost_price is None:
             cost_price = 0.0
         else:
