@@ -73,6 +73,15 @@ class FallbackGemini(BaseLlm):
                                     logging.error(f"FallbackGemini: Error mid-stream: {e}")
                                     raise e
                                 return
+                            else:
+                                # H2: empty-but-successful stream — record a REAL error
+                                # and fall through to the next model instead of exiting
+                                # silently with last_error=None.
+                                last_error = RuntimeError(
+                                    f"FallbackGemini: model '{current_model}' returned an empty stream"
+                                )
+                                logging.warning(str(last_error))
+                                break
                         except Exception as e:
                             err_str = str(e)
                             err_type = type(e).__name__
@@ -170,9 +179,9 @@ def _build_model(default_gemini: str) -> BaseLlm:
     return get_fallback_model(default_gemini)
 
 
-MODEL_FAST = _build_model("gemini-3.5-flash")
-MODEL_DEEP = _build_model("gemini-3.5-flash")
-MODEL_LITE = _build_model("gemini-3.5-flash")  # alias para contextos de bajo costo
+MODEL_FAST = _build_model("gemini-2.0-flash")
+MODEL_DEEP = _build_model("gemini-2.0-flash")
+MODEL_LITE = _build_model("gemini-2.0-flash")  # alias para contextos de bajo costo
 
 # ─── App Constants ──────────────────────────────────────────────────
 APP_NAME = "agents"
