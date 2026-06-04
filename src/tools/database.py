@@ -7,6 +7,7 @@ import os
 from datetime import datetime, timedelta
 
 from src.infra.db import get_supabase
+from src.tools.ledger_common import latest_ledger_date
 
 
 async def query_inventory_ledger(
@@ -96,9 +97,8 @@ async def get_stock_alerts(
     """
     client = await get_supabase()
     # Fetch the latest available date in daily_inventory_ledger to handle stale data
-    date_res = await client.table("daily_inventory_ledger").select("date").order("date", desc=True).limit(1).execute()
-    if date_res.data:
-        target_date_str = date_res.data[0]["date"]
+    target_date_str = await latest_ledger_date(client)
+    if target_date_str:
         from datetime import datetime as dt
         target_date = dt.strptime(target_date_str, "%Y-%m-%d").date()
         prev_date_str = (target_date - timedelta(days=1)).strftime("%Y-%m-%d")

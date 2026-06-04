@@ -5,6 +5,7 @@ para generar inteligencia de negocio de nivel C-Suite.
 """
 from datetime import datetime, timedelta
 from src.infra.db import get_supabase
+from src.tools.ledger_common import latest_ledger_date
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -36,8 +37,7 @@ async def classify_products_bcg(top_n: int = 50) -> dict:
     id_to_sku = {p["id"]: p["sku"] for p in (prod_res.data or []) if p.get("id") and p.get("sku")}
 
     # 1. Obtener fecha más reciente en el ledger
-    date_res = await client.table("daily_inventory_ledger").select("date").order("date", desc=True).limit(1).execute()
-    target_date = date_res.data[0]["date"] if date_res.data else datetime.now().strftime("%Y-%m-%d")
+    target_date = await latest_ledger_date(client) or datetime.now().strftime("%Y-%m-%d")
 
     # 2. Obtener velocidad de ventas y stock actuales
     inv_res = await client.table("daily_inventory_ledger").select(
@@ -704,8 +704,7 @@ async def calculate_stockout_risk_scores(top_n: int = 30) -> dict:
     id_to_sku = {p["id"]: p["sku"] for p in (prod_res.data or []) if p.get("id") and p.get("sku")}
 
     # 1. Inventario actual
-    date_res = await client.table("daily_inventory_ledger").select("date").order("date", desc=True).limit(1).execute()
-    target_date = date_res.data[0]["date"] if date_res.data else datetime.now().strftime("%Y-%m-%d")
+    target_date = await latest_ledger_date(client) or datetime.now().strftime("%Y-%m-%d")
 
     inv_res = await client.table("daily_inventory_ledger").select(
         "product_id, product_name, stock_end_of_day, sales_velocity"
@@ -911,8 +910,7 @@ async def optimize_restock_with_budget(
     id_to_price = {p["id"]: p.get("price") for p in (prod_res.data or []) if p.get("id")}
 
     # ── 1. Inventario actual ──────────────────────────────────────────────────
-    date_res = await client.table("daily_inventory_ledger").select("date").order("date", desc=True).limit(1).execute()
-    target_date = date_res.data[0]["date"] if date_res.data else datetime.now().strftime("%Y-%m-%d")
+    target_date = await latest_ledger_date(client) or datetime.now().strftime("%Y-%m-%d")
 
     inv_res = await client.table("daily_inventory_ledger").select(
         "product_id, product_name, stock_end_of_day, sales_velocity, price"

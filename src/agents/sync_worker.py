@@ -10,6 +10,7 @@ from google.adk.events import Event
 from google.genai import types
 from src.infra.db import get_supabase
 from src.infra.logger import log_error, log_info
+from src.tools.ledger_common import latest_ledger_date
 
 class SyncWorker(BaseAgent):
     """
@@ -146,8 +147,7 @@ class SyncWorker(BaseAgent):
         # 3. Final State Validation & Cache fallback
         if not sync_success:
             try:
-                date_res = await client.table("daily_inventory_ledger").select("date").order("date", desc=True).limit(1).execute()
-                latest_date = date_res.data[0]["date"] if date_res.data else None
+                latest_date = await latest_ledger_date(client)
             except Exception as db_err:
                 latest_date = None
                 sync_error_msg += f" | Error de base de datos al buscar histórico: {db_err}"

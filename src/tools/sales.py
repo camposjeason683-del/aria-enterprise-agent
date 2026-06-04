@@ -24,20 +24,23 @@ async def query_revenue_summary(days: int = 7) -> dict:
     client = await get_supabase()
     cutoff = (datetime.now() - timedelta(days=days)).isoformat()
     
-    res = (
-        await client.table("wc_orders_cache")
-        .select("total, status")
-        .gte("date_created", cutoff)
-        .in_("status", ["completed", "processing"])
-        .execute()
+    # P2: aggregate (SUM/COUNT) in the DB instead of transferring every order row
+    # to sum in Python. exec_safe_read is SECURITY INVOKER → RLS still scopes the
+    # rows to the caller's tenant. `cutoff` is a computed ISO string (derived from
+    # the int `days`); no user-controlled text reaches the SQL.
+    sql = (
+        "SELECT COALESCE(SUM((total)::numeric), 0) AS revenue, COUNT(*) AS n "
+        "FROM wc_orders_cache "
+        f"WHERE date_created >= '{cutoff}' "
+        "AND status IN ('completed', 'processing')"
     )
-    
-    total_revenue = sum(float(r["total"]) for r in (res.data or []))
-    
+    res = await client.rpc("exec_safe_read", {"q": sql})
+    row = (res.data or [{}])[0]
+
     return {
-        "revenue": round(total_revenue, 2),
+        "revenue": round(float(row.get("revenue") or 0), 2),
         "days": days,
-        "orders_counted": len(res.data or [])
+        "orders_counted": int(row.get("n") or 0),
     }
 
 async def query_top_customers(days: int = 30, limit: int = 5) -> dict:
@@ -45,24 +48,28 @@ async def query_top_customers(days: int = 30, limit: int = 5) -> dict:
     client = await get_supabase()
     cutoff = (datetime.now() - timedelta(days=days)).isoformat()
     
-    res = (
-        await client.table("wc_orders_cache")
-        .select("customer_name, total")
-        .gte("date_created", cutoff)
-        .in_("status", ["completed", "processing"])
-        .execute()
+    # P2: GROUP BY + ORDER BY + LIMIT in the DB instead of fetching every order and
+    # ranking the top-N in Python (fetch-all anti-pattern). RLS-scoped via
+    # exec_safe_read (SECURITY INVOKER). `limit` is coerced to int; `cutoff` is a
+    # computed ISO string — no user-controlled text reaches the SQL. The name guard
+    # mirrors the old `if name:` (skip NULL and empty string).
+    sql = (
+        "SELECT customer_name, COALESCE(SUM((total)::numeric), 0) AS total_spent "
+        "FROM wc_orders_cache "
+        f"WHERE date_created >= '{cutoff}' "
+        "AND status IN ('completed', 'processing') "
+        "AND customer_name IS NOT NULL AND customer_name <> '' "
+        "GROUP BY customer_name "
+        "ORDER BY total_spent DESC "
+        f"LIMIT {int(limit)}"
     )
-    
-    customers = {}
-    for r in (res.data or []):
-        name = r.get("customer_name")
-        if name:
-            customers[name] = customers.get(name, 0) + float(r.get("total") or 0)
-            
-    top = sorted(customers.items(), key=lambda x: x[1], reverse=True)[:limit]
-    
+    res = await client.rpc("exec_safe_read", {"q": sql})
+
     return {
-        "top_customers": [{"name": c[0], "total_spent": round(c[1], 2)} for c in top]
+        "top_customers": [
+            {"name": r.get("customer_name"), "total_spent": round(float(r.get("total_spent") or 0), 2)}
+            for r in (res.data or [])
+        ]
     }
 
 async def calc_avg_order_value(days: int = 30) -> dict:
