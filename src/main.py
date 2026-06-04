@@ -111,6 +111,14 @@ class _CopilotKitTenantMiddleware:
                         )
                 except Exception as exc:
                     log_error("CopilotKit tenant middleware: auth failed", error=str(exc))
+            # F1/C3: fail closed when no tenant context got established and the demo
+            # fallback is disabled (prod) — reject instead of silently running as the
+            # demo tenant. Local dev keeps zero-friction via ARIA_ALLOW_DEMO_FALLBACK.
+            from src.infra.db import _ALLOW_DEMO_FALLBACK
+            from src.infra.tenant_context import current as _cur_ctx0
+
+            if _cur_ctx0() is None and not _ALLOW_DEMO_FALLBACK:
+                return await _asgi_json(send, 401, {"detail": "Autenticación requerida."})
             # C2: enforce the kill switch + rate limit on the agent path too —
             # ag_ui_adk mounts this endpoint outside the FastAPI deps that gate
             # /api/v1/chat, so without this the sandbox runs the agents unthrottled
@@ -383,6 +391,15 @@ async def chat(
 
 
 # ─── Admin Endpoints ─────────────────────────────────────────────────
+async def require_admin(tenant: TenantContext = Depends(require_tenant)) -> TenantContext:
+    """F3: gate privileged actions (proposal approve/reject/execute) to admins.
+    Employees are tenant members but must not approve/execute strategic proposals
+    (which create real purchase_order_drafts)."""
+    if tenant.role != "admin":
+        raise HTTPException(403, "Acción permitida solo para administradores.")
+    return tenant
+
+
 @app.post("/api/v1/admin/kill-switch")
 async def toggle_kill_switch(
     active: bool, tenant: TenantContext = Depends(require_tenant)
@@ -416,7 +433,7 @@ async def list_proposals(
 
 @app.post("/api/v1/proposals/{proposal_id}/approve")
 async def approve_proposal(
-    proposal_id: str, tenant: TenantContext = Depends(require_tenant)
+    proposal_id: str, tenant: TenantContext = Depends(require_admin)
 ):
     client = await get_supabase()
     await (
@@ -438,7 +455,7 @@ async def approve_proposal(
 async def reject_proposal(
     proposal_id: str,
     reason: str = "",
-    tenant: TenantContext = Depends(require_tenant),
+    tenant: TenantContext = Depends(require_admin),
 ):
     client = await get_supabase()
     await (
@@ -452,7 +469,7 @@ async def reject_proposal(
 
 @app.post("/api/v1/proposals/{proposal_id}/execute")
 async def execute_proposal(
-    proposal_id: str, tenant: TenantContext = Depends(require_tenant)
+    proposal_id: str, tenant: TenantContext = Depends(require_admin)
 ):
     from src.tools.strategic import execute_approved_proposal
     res = await execute_approved_proposal(proposal_id)
@@ -477,8 +494,12 @@ async def add_proposal_comment(
         "content": content
     }).execute()
     
-    # 2. Check if AI active
-    if not await is_ai_active():
+    # 2. Check if AI active (H4: tolerate a transient config-read outage)
+    try:
+        _comment_ai_active = await is_ai_active()
+    except KillSwitchUnavailable:
+        _comment_ai_active = False
+    if not _comment_ai_active:
         return {
             "status": "success",
             "agent_responded": False,
