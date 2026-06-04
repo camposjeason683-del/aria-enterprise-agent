@@ -58,9 +58,9 @@ export function signIn(email: string, password: string) {
   return authRequest("/api/auth/sessions", { email, password });
 }
 
-export function signUp(email: string, password: string, name?: string) {
-  return authRequest("/api/auth/users", { email, password, name: name ?? email });
-}
+// NOTE: no public signUp. Users are provisioned by a company admin
+// (scripts/provision_user.py) so they always land with a tenant membership —
+// self-serve signup created tenant-less orphans the backend rejects (F6).
 
 /** Rotate the access token using the stored refresh token. Returns success. */
 export async function refreshSession(): Promise<boolean> {
