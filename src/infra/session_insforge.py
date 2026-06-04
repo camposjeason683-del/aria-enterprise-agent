@@ -114,13 +114,22 @@ class InsForgeSessionService(InMemorySessionService):
     # ── persistence helpers ──────────────────────────────────────────────────
     async def _persist(self, session: Session) -> None:
         ctx = _current_tenant()
+        # C1: strip ephemeral temp: state so it never round-trips through InsForge.
+        # ADK treats temp: as in-turn-only; persisting it leaks the QC retry counter,
+        # approved_response and wants_report across turns/restarts (silently disabling
+        # quality control). Mirrors ADK's _trim_temp_delta_state.
+        dumped = session.model_dump(mode="json")
+        if isinstance(dumped.get("state"), dict):
+            dumped["state"] = {
+                k: v for k, v in dumped["state"].items() if not str(k).startswith("temp:")
+            }
         row = {
             "id": _row_id(session.app_name, session.user_id, session.id),
             "app_name": session.app_name,
             "user_id": session.user_id,
             "session_id": session.id,
             "tenant_id": ctx.tenant_id if ctx else None,
-            "state": session.model_dump(mode="json"),
+            "state": dumped,
             "last_update_time": session.last_update_time,
         }
         try:
@@ -147,4 +156,10 @@ class InsForgeSessionService(InMemorySessionService):
             return None
         if not res.data:
             return None
-        return Session(**res.data[0]["state"])
+        stored = res.data[0]["state"]
+        # C1: defensively drop any temp: keys persisted by older code before rehydrating.
+        if isinstance(stored, dict) and isinstance(stored.get("state"), dict):
+            stored["state"] = {
+                k: v for k, v in stored["state"].items() if not str(k).startswith("temp:")
+            }
+        return Session(**stored)

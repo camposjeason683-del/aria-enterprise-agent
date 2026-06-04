@@ -22,12 +22,13 @@ async def handle_db_trigger(req: Request):
     product = record.get("product_name", "Unknown")
     
     if stock <= 15:
-        log_info(f"Triggering ReorderAlert for {product} (Stock: {stock})")
-        
-        # Fire pipeline into background
-        # Usually requires a runner setup, this simulates the background firing
-        msg = f"Revisa el stock crítico de {product} generame una pauta de reorden."
-        # Background task simulation
-        pass
-        
+        # M3: the reorder_alert pipeline is NOT wired to a Runner here and this router
+        # is not mounted in main.py. Return 501 instead of a false 200 so the caller
+        # (Postgres trigger) does not believe an alert was produced (explicit disable
+        # over silent breakage — CLAUDE.md). TODO: wire `reorder_alert` to the Runner.
+        from fastapi import HTTPException
+
+        log_info(f"ReorderAlert trigger received for {product} (Stock: {stock}) — pipeline not wired")
+        raise HTTPException(501, "Automatización de reorden no implementada todavía.")
+
     return {"status": "ok"}

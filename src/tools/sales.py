@@ -167,7 +167,7 @@ async def query_customer_churn(months: int = 3, reference_date: str = "2026-05-2
       (SELECT COUNT(*) FROM Target) as total_activos_periodo
     """
     
-    res = await client.rpc("execute_read_query", {"query_text": query}).execute()
+    res = await client.rpc("exec_safe_read", {"q": query})  # F5: real RPC (was undefined execute_read_query)
     if not res.data:
         return {"error": "No data returned from database."}
         

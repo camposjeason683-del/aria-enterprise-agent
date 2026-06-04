@@ -170,7 +170,9 @@ _NODE_TOOLS: dict[str, List[Callable]] = {
         estimate_decision_impact,
         submit_proposal,
         list_pending_proposals,
-        execute_approved_proposal,
+        # C4: execute_approved_proposal removed from the LLM toolset — it inserts a
+        # real purchase_order_draft with no idempotency. It stays endpoint-only
+        # (POST /api/v1/proposals/{id}/execute) behind human approval.
         execute_proactive_sweep_auto,
         analyze_supply_chain_bottlenecks,
         predict_stockouts_and_repurchase,
@@ -191,6 +193,10 @@ _NODE_TOOLS: dict[str, List[Callable]] = {
         manage_ham_memory,
     ],
     "coordinator": [
+        # E1: the coordinator_llm handles AMBIGUOUS queries (incl. forecasts that tie
+        # between SALES and DEMAND) — give it forecast_sales directly so the dedicated
+        # statistical forecaster is reachable instead of falling back to raw SQL.
+        forecast_sales,
         execute_safe_read_query,
         execute_python_script,
     ],

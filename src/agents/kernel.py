@@ -308,6 +308,7 @@ def _quality_control_supervisor(ctx: Context, node_input: Any) -> Event:
     
     if retry_count >= 3:
         log_info(f"QC Supervisor: Retry limit ({retry_count}) reached for {last_analyst}. Force approving.", agent="supervisor")
+        _set_state_val(ctx.state, retry_key, 0)  # C1: reset so the next turn starts fresh
         _set_state_val(ctx.state, "temp:approved_response", analyst_response)
         if wants_report or _get_state_val(ctx.state, "temp:wants_report", False):
             return Event(route="GENERATE_REPORT")
@@ -376,6 +377,7 @@ Responde ÚNICAMENTE con el bloque JSON, sin markdown, sin texto adicional alred
         
     if approved:
         log_info(f"QC Supervisor: Approved output from {last_analyst}.", agent="supervisor")
+        _set_state_val(ctx.state, retry_key, 0)  # C1: reset retry counter on success
         _set_state_val(ctx.state, "temp:approved_response", analyst_response)
         if wants_report or _get_state_val(ctx.state, "temp:wants_report", False):
             return Event(route="GENERATE_REPORT")
