@@ -113,27 +113,31 @@ async def before_model_handler(callback_context, llm_request):
 # ─── BEFORE TOOL: Validate Parameters ───────────────────────────────
 async def validate_tool_params(tool, args, tool_context):
     """Validate and sanitize tool parameters BEFORE execution."""
-    # Block destructive SQL
-    if "query" in args:
-        q = str(args["query"]).upper()
-        for kw in _DESTRUCTIVE_SQL:
-            if kw in q:
-                return {
-                    "error": "Operación de escritura bloqueada. Solo lectura permitida."
-                }
+    # M2: block destructive SQL on the ACTUAL tool arg names. The real SQL tool
+    # (execute_safe_read_query) takes `sql_query`; `query` is legacy. (script_code is
+    # Python — protected by the sandbox's import policy, not by SQL-keyword matching.)
+    for _k in ("query", "sql_query"):
+        if _k in args:
+            q = str(args[_k]).upper()
+            for kw in _DESTRUCTIVE_SQL:
+                if kw in q:
+                    return {
+                        "error": "Operación de escritura bloqueada. Solo lectura permitida."
+                    }
 
-    # Enforce safe ranges
-    if "days" in args:
-        args["days"] = min(int(args.get("days", 7)), 90)
-
-    if "limit" in args:
-        args["limit"] = min(int(args.get("limit", 50)), 200)
-
-    if "top_n" in args:
-        args["top_n"] = min(int(args.get("top_n", 20)), 50)
-
-    if "forecast_days" in args:
-        args["forecast_days"] = min(int(args.get("forecast_days", 30)), 90)
+    # Enforce safe ranges. Guard the int() casts so a non-numeric arg can't crash
+    # the callback (falls back to the default instead of raising ValueError).
+    for _key, _cap, _default in (
+        ("days", 90, 7),
+        ("limit", 200, 50),
+        ("top_n", 50, 20),
+        ("forecast_days", 90, 30),
+    ):
+        if _key in args:
+            try:
+                args[_key] = min(int(args.get(_key, _default)), _cap)
+            except (TypeError, ValueError):
+                args[_key] = _default
 
     return None
 

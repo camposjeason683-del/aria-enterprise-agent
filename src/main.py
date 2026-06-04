@@ -8,6 +8,8 @@ import time
 from contextlib import asynccontextmanager
 from datetime import datetime
 
+import json
+
 from dotenv import load_dotenv
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -56,6 +58,17 @@ app.add_middleware(
 )
 
 
+async def _asgi_json(send, status: int, payload: dict) -> None:
+    """Send a minimal JSON response directly from pure-ASGI middleware."""
+    body = json.dumps(payload).encode()
+    await send({
+        "type": "http.response.start",
+        "status": status,
+        "headers": [(b"content-type", b"application/json")],
+    })
+    await send({"type": "http.response.body", "body": body})
+
+
 class _CopilotKitTenantMiddleware:
     """Pure-ASGI middleware: for the CopilotKit agent path (which is mounted by
     ag_ui_adk and has no FastAPI dependency to run require_tenant), verify the
@@ -98,6 +111,34 @@ class _CopilotKitTenantMiddleware:
                         )
                 except Exception as exc:
                     log_error("CopilotKit tenant middleware: auth failed", error=str(exc))
+            # F1/C3: fail closed when no tenant context got established and the demo
+            # fallback is disabled (prod) — reject instead of silently running as the
+            # demo tenant. Local dev keeps zero-friction via ARIA_ALLOW_DEMO_FALLBACK.
+            from src.infra.db import _ALLOW_DEMO_FALLBACK
+            from src.infra.tenant_context import current as _cur_ctx0
+
+            if _cur_ctx0() is None and not _ALLOW_DEMO_FALLBACK:
+                return await _asgi_json(send, 401, {"detail": "Autenticación requerida."})
+            # C2: enforce the kill switch + rate limit on the agent path too —
+            # ag_ui_adk mounts this endpoint outside the FastAPI deps that gate
+            # /api/v1/chat, so without this the sandbox runs the agents unthrottled
+            # and can't be stopped by the kill switch.
+            try:
+                _active = await is_ai_active()
+            except KillSwitchUnavailable:
+                return await _asgi_json(send, 503, {"detail": "Servicio temporalmente no disponible."})
+            if not _active:
+                return await _asgi_json(send, 503, {"detail": "ARIA está desactivada por el administrador."})
+            from src.infra.tenant_context import current as _current_ctx
+            _ctx = _current_ctx()
+            if _ctx is not None:
+                try:
+                    _tier = await resolve_tenant_tier(_ctx.tenant_id)
+                    _rate = await check_rate_limit(_ctx.tenant_id, _ctx.user_id, _tier)
+                    if not _rate.allowed:
+                        return await _asgi_json(send, 429, {"detail": "Límite de solicitudes excedido para tu plan."})
+                except Exception as exc:
+                    log_error("CopilotKit rate-limit check failed", error=str(exc))
         await self.app(scope, receive, send)
 
 
@@ -124,9 +165,26 @@ async def timing_middleware(request: Request, call_next):
     return response
 
 
+# ─── Health ──────────────────────────────────────────────────────────
+@app.get("/health")
+async def health():
+    """E3: liveness probe (was 404). Used by Render/Cloud Run health checks —
+    deliberately unauthenticated and dependency-free so it stays green during a DB
+    blip (the kill switch / readiness is a separate concern)."""
+    return {"status": "ok"}
+
+
 # ─── Kill Switch ─────────────────────────────────────────────────────
+class KillSwitchUnavailable(Exception):
+    """H4: raised when the kill-switch config can't be READ (vs. an actual 'off').
+    Lets callers distinguish a transient DB outage (→ 503 'temporarily unavailable')
+    from an admin disable (→ 503 'desactivada por el administrador')."""
+
+
 async def is_ai_active() -> bool:
-    """Read the kill switch flag from the database with auto-reconnect retry."""
+    """Read the kill switch flag with auto-reconnect retry. Raises
+    KillSwitchUnavailable if the config can't be read (so a DB blip is reported as a
+    transient outage, not misreported as 'the admin turned ARIA off')."""
     for attempt in range(2):
         try:
             client = get_system_client()
@@ -142,7 +200,7 @@ async def is_ai_active() -> bool:
             log_error(f"Kill switch check failed (attempt {attempt+1}): {e}")
             if attempt == 0:
                 await close_supabase()
-    return False
+    raise KillSwitchUnavailable("kill switch config unreadable")
 
 
 
@@ -186,8 +244,12 @@ async def chat(
     # Identity comes from the verified JWT (never a client-supplied form field).
     user_id = tenant.user_id
 
-    # 1. Kill Switch
-    if not await is_ai_active():
+    # 1. Kill Switch (H4: distinguish 'off' from 'config unreadable')
+    try:
+        _ai_active = await is_ai_active()
+    except KillSwitchUnavailable:
+        raise HTTPException(503, "Servicio temporalmente no disponible. Reintentá en unos segundos.")
+    if not _ai_active:
         raise HTTPException(503, "ARIA está desactivada por el administrador.")
 
     # 2. Rate limit (per tenant+user, by subscription tier; shared counter)
@@ -338,6 +400,15 @@ async def chat(
 
 
 # ─── Admin Endpoints ─────────────────────────────────────────────────
+async def require_admin(tenant: TenantContext = Depends(require_tenant)) -> TenantContext:
+    """F3: gate privileged actions (proposal approve/reject/execute) to admins.
+    Employees are tenant members but must not approve/execute strategic proposals
+    (which create real purchase_order_drafts)."""
+    if tenant.role != "admin":
+        raise HTTPException(403, "Acción permitida solo para administradores.")
+    return tenant
+
+
 @app.post("/api/v1/admin/kill-switch")
 async def toggle_kill_switch(
     active: bool, tenant: TenantContext = Depends(require_tenant)
@@ -371,7 +442,7 @@ async def list_proposals(
 
 @app.post("/api/v1/proposals/{proposal_id}/approve")
 async def approve_proposal(
-    proposal_id: str, tenant: TenantContext = Depends(require_tenant)
+    proposal_id: str, tenant: TenantContext = Depends(require_admin)
 ):
     client = await get_supabase()
     await (
@@ -393,7 +464,7 @@ async def approve_proposal(
 async def reject_proposal(
     proposal_id: str,
     reason: str = "",
-    tenant: TenantContext = Depends(require_tenant),
+    tenant: TenantContext = Depends(require_admin),
 ):
     client = await get_supabase()
     await (
@@ -407,7 +478,7 @@ async def reject_proposal(
 
 @app.post("/api/v1/proposals/{proposal_id}/execute")
 async def execute_proposal(
-    proposal_id: str, tenant: TenantContext = Depends(require_tenant)
+    proposal_id: str, tenant: TenantContext = Depends(require_admin)
 ):
     from src.tools.strategic import execute_approved_proposal
     res = await execute_approved_proposal(proposal_id)
@@ -432,8 +503,12 @@ async def add_proposal_comment(
         "content": content
     }).execute()
     
-    # 2. Check if AI active
-    if not await is_ai_active():
+    # 2. Check if AI active (H4: tolerate a transient config-read outage)
+    try:
+        _comment_ai_active = await is_ai_active()
+    except KillSwitchUnavailable:
+        _comment_ai_active = False
+    if not _comment_ai_active:
         return {
             "status": "success",
             "agent_responded": False,
@@ -611,11 +686,24 @@ async def put_canvas(
 
 from ag_ui_adk import ADKAgent, add_adk_fastapi_endpoint
 
+def _copilotkit_user_id(run_input) -> str:
+    # F2: bind the ADK session identity to the VERIFIED tenant user (set by
+    # _CopilotKitTenantMiddleware in the same task) instead of the client-supplied
+    # thread_id, namespaced by tenant so sessions can't collide/leak across tenants.
+    from src.infra.tenant_context import current as _cur
+
+    ctx = _cur()
+    if ctx is not None:
+        return f"{ctx.tenant_id}:{ctx.user_id}"
+    return f"thread_user_{getattr(run_input, 'thread_id', 'anon')}"
+
+
 # Create the ADKAgent wrapper for CopilotKit
 copilotkit_agent = ADKAgent(
     adk_agent=root_agent,
     app_name=APP_NAME,
     session_service=session_service,
+    user_id_extractor=_copilotkit_user_id,
 )
 
 # Mount it on FastAPI

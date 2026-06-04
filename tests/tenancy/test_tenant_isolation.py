@@ -8,7 +8,7 @@ ARIA_LIVE_TESTS=1, so it never fails CI without credentials.
 
 Prereqs (set in the live runbook / .env):
   ARIA_LIVE_TESTS=1
-  INSFORGE_URL, INSFORGE_ANON_KEY
+  INSFORGE_URL, INSFORGE_API_KEY
   ARIA_TEST_JWT_A   # access token of a user in tenant A
   ARIA_TEST_JWT_B   # access token of a user in tenant B
   (seed: A and B each have >=1 row in wc_orders_cache and aria_proposals)

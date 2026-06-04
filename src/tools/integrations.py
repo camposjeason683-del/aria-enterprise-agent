@@ -2,8 +2,9 @@
 ARIA-OS: per-tenant integration credentials (WooCommerce), encrypted at rest.
 
 - save_tenant_integration: writes via the TENANT client by default, so RLS
-  (ti_write → is_tenant_admin) enforces that only an admin can store creds (I2);
-  the API endpoint also checks role == "admin" (defense in depth).
+  (ti_write → is_tenant_admin) enforces that only an admin can store creds (I2).
+  (F4: there is no user-facing endpoint wired for this yet — RLS is the only live
+  protection. Add a require_admin-gated route if/when creds become user-managed.)
 - load_tenant_integration: reads via the SYSTEM (admin) client by default,
   because the cron sync runs with no user JWT and must fetch a given tenant's
   creds to sync its store (I3). Returns decrypted values.

@@ -213,6 +213,52 @@ def _set_state_val(state, key, val):
 
 
 # ── Node 3: Quality Control Supervisor ───────────────────────────────────────
+def _run_qc_audit(audit_prompt: str) -> dict | None:
+    """H1: run the QC audit through the configured AI backend (InsForge AI when set,
+    else Gemini with a REAL model id). Returns parsed {approved, reason} or None on
+    infra failure (the caller then degrades VISIBLY). Sync on purpose — the QC node is
+    sync and already blocks on its model call; uses httpx.Client to mirror that."""
+    import httpx
+
+    insforge_url = os.environ.get("INSFORGE_URL")
+    insforge_key = os.environ.get("INSFORGE_API_KEY")
+    if insforge_url and insforge_key:
+        try:
+            model = os.environ.get("INSFORGE_AI_MODEL", "openai/gpt-4o-mini")
+            with httpx.Client(timeout=60.0) as http:
+                r = http.post(
+                    insforge_url.rstrip("/") + "/api/ai/chat/completion",
+                    headers={"Authorization": f"Bearer {insforge_key}", "Content-Type": "application/json"},
+                    json={"model": model, "messages": [{"role": "user", "content": audit_prompt}]},
+                )
+            if r.status_code >= 400:
+                log_error(f"QC audit: InsForge AI HTTP {r.status_code}", body=r.text[:200])
+                return None
+            text = (r.json().get("text") or "").strip()
+            if text.startswith("```"):  # tolerate code-fenced JSON
+                text = text.strip("`")
+                if text.lower().startswith("json"):
+                    text = text[4:]
+                text = text.strip()
+            return json.loads(text)
+        except Exception as e:
+            log_error(f"QC audit: InsForge AI error: {e}")
+            return None
+    try:
+        from google.genai import Client
+
+        client = Client(api_key=os.environ.get("GEMINI_API_KEY"))
+        resp = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=audit_prompt,
+            config={"response_mime_type": "application/json", "temperature": 0.0},
+        )
+        return json.loads(resp.text.strip())
+    except Exception as e:
+        log_error(f"QC audit: Gemini error: {e}")
+        return None
+
+
 def _quality_control_supervisor(ctx: Context, node_input: Any) -> Event:
     """
     Audits the logic and SQL queries executed by the analyst.
@@ -308,16 +354,13 @@ def _quality_control_supervisor(ctx: Context, node_input: Any) -> Event:
     
     if retry_count >= 3:
         log_info(f"QC Supervisor: Retry limit ({retry_count}) reached for {last_analyst}. Force approving.", agent="supervisor")
+        _set_state_val(ctx.state, retry_key, 0)  # C1: reset so the next turn starts fresh
         _set_state_val(ctx.state, "temp:approved_response", analyst_response)
         if wants_report or _get_state_val(ctx.state, "temp:wants_report", False):
             return Event(route="GENERATE_REPORT")
         return Event(route="APPROVED")
         
-    # 4. Call Gemini to audit
-    from google.genai import Client
-    api_key = os.environ.get("GEMINI_API_KEY")
-    client = Client(api_key=api_key)
-    
+    # 4. Audit the analyst output (via the configured AI backend — see _run_qc_audit).
     audit_prompt = f"""
 Eres el Supervisor de Control de Calidad (QC) de ARIA-OS. Tu trabajo es realizar una auditoría rigurosa de las consultas SQL y el código de análisis devuelto por el analista '{last_analyst}'.
 
@@ -360,22 +403,23 @@ Responde en un formato JSON estructurado con las siguientes claves:
 
 Responde ÚNICAMENTE con el bloque JSON, sin markdown, sin texto adicional alrededor.
 """
-    try:
-        response = client.models.generate_content(
-            model="gemini-3.5-flash",
-            contents=audit_prompt,
-            config={"response_mime_type": "application/json", "temperature": 0.0}
+    audit_result = _run_qc_audit(audit_prompt)
+    if audit_result is None:
+        # H1: degrade VISIBLY instead of silently shipping unaudited output.
+        log_error("QC Supervisor: audit backend unavailable — approving with a visible notice.")
+        analyst_response = (
+            "⚠️ _(Control de calidad no disponible — esta respuesta no fue auditada.)_\n\n"
+            + analyst_response
         )
-        result = json.loads(response.text.strip())
-        approved = result.get("approved", True)
-        reason = result.get("reason", "")
-    except Exception as e:
-        log_error(f"QC Supervisor: Error calling Gemini audit: {e}. Auto-approving to prevent crash.")
         approved = True
-        reason = ""
+        reason = "QC no disponible"
+    else:
+        approved = audit_result.get("approved", True)
+        reason = audit_result.get("reason", "")
         
     if approved:
         log_info(f"QC Supervisor: Approved output from {last_analyst}.", agent="supervisor")
+        _set_state_val(ctx.state, retry_key, 0)  # C1: reset retry counter on success
         _set_state_val(ctx.state, "temp:approved_response", analyst_response)
         if wants_report or _get_state_val(ctx.state, "temp:wants_report", False):
             return Event(route="GENERATE_REPORT")

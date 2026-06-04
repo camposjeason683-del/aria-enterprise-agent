@@ -33,6 +33,11 @@ from src.infra.tenant_context import current_jwt
 # contextvar (ag_ui_adk mounts the endpoint outside the app middleware), so the
 # data layer falls back to a cached demo session there. The proper /api/v1/chat
 # path always has a tenant context and never hits this fallback.
+# F1/C3: the demo-tenant fallback is opt-in (local dev only). Default OFF so prod
+# fails closed when a request reaches the data layer without a resolved tenant
+# context (a missing/expired token must not silently run/write as the demo tenant).
+_ALLOW_DEMO_FALLBACK = os.environ.get("ARIA_ALLOW_DEMO_FALLBACK", "").lower() in ("1", "true", "yes")
+
 _DEMO_EMAIL = "demo@aria.os"
 _DEMO_PW = "AriaDemo2026!"
 _demo_cache: dict = {"jwt": None, "exp": 0.0}
@@ -65,7 +70,11 @@ async def get_supabase() -> InsForgeClient:
     """
     if _current_ctx() is not None:
         return get_tenant_client(current_jwt())
-    return get_tenant_client(await _demo_jwt())
+    if _ALLOW_DEMO_FALLBACK:
+        return get_tenant_client(await _demo_jwt())
+    raise RuntimeError(
+        "Sin contexto de tenant y demo fallback deshabilitado (ARIA_ALLOW_DEMO_FALLBACK)."
+    )
 
 
 def get_system_client() -> InsForgeClient:

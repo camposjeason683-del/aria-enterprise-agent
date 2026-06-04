@@ -42,27 +42,40 @@ def get_memory_file_path(memory_type: str) -> str:
     filename = "USER.md" if memory_type.lower() == "user" else "MEMORY.md"
     return os.path.join(MEMORY_DIR, filename)
 
+_HAM_CACHE: dict[str, tuple[float, str]] = {}  # path -> (mtime, content)
+
+
 def read_ham_memory(memory_type: str) -> str:
+    """Reads the memory file, cached in-process with an mtime check.
+
+    P1: this runs inside before_model_handler on EVERY model call (5-10× per turn)
+    and previously did a makedirs + 2 blocking disk reads each time. Now it serves
+    from cache unless the file's mtime changed.
     """
-    Reads the content of the specified memory file. 
-    Initializes it with default contents if the file does not exist.
-    """
-    os.makedirs(MEMORY_DIR, exist_ok=True)
     path = get_memory_file_path(memory_type)
-    
-    if not os.path.exists(path):
+    try:
+        mtime = os.path.getmtime(path)
+        cached = _HAM_CACHE.get(path)
+        if cached is not None and cached[0] == mtime:
+            return cached[1]
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+        _HAM_CACHE[path] = (mtime, content)
+        return content
+    except FileNotFoundError:
+        os.makedirs(MEMORY_DIR, exist_ok=True)
         default_content = INITIAL_CONTENTS.get(memory_type.lower(), "")
         try:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(default_content)
+            try:
+                _HAM_CACHE[path] = (os.path.getmtime(path), default_content)
+            except OSError:
+                pass
             return default_content
         except Exception as e:
             log_error(f"read_ham_memory: Failed to write initial file at {path}: {e}")
             return ""
-            
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return f.read()
     except Exception as e:
         log_error(f"read_ham_memory: Failed to read file {path}: {e}")
         return ""
