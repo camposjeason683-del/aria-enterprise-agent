@@ -82,11 +82,13 @@ class ProactivePipelineAgent(BaseAgent):
             async for event in agen:
                 yield event
                 
-        all_events = ctx.session.events
-        sync_events = all_events[events_before:]
-        
-        ctx.session.events = all_events[:events_before]
-        
+        # M4: hide the sync-worker events from the advisor's context WITHOUT
+        # reassigning the shared list object (reassignment diverges any reference held
+        # elsewhere, e.g. the write-through session service). Mutate the same list in
+        # place and restore in finally.
+        sync_events = ctx.session.events[events_before:]
+        del ctx.session.events[events_before:]
+
         try:
             async with Aclosing(advisor_proactive.run_async(ctx)) as agen:
                 async for event in agen:

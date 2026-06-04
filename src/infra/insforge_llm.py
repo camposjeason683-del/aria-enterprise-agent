@@ -75,8 +75,9 @@ def _normalize_schema(s: Any) -> Any:
 
 def _messages(llm_request) -> list[dict]:
     messages: list[dict] = []
-    pending: list[str] = []  # FIFO of tool-call ids awaiting a response
     counter = 0
+    emitted_ids: list[str] = []  # tool_call ids emitted so far, in order
+    matched: set[str] = set()    # ids already paired with a tool result
 
     for content in getattr(llm_request, "contents", None) or []:
         role = content.role or "user"
@@ -91,7 +92,7 @@ def _messages(llm_request) -> list[dict]:
             if fc:
                 counter += 1
                 cid = fc.id or f"call_{counter}"
-                pending.append(cid)
+                emitted_ids.append(cid)
                 tool_calls.append(
                     {
                         "id": cid,
@@ -104,7 +105,16 @@ def _messages(llm_request) -> list[dict]:
                 )
             fr = getattr(part, "function_response", None)
             if fr:
-                rid = fr.id or (pending.pop(0) if pending else f"call_{counter}")
+                # H3: pair by id when the response carries a valid one; else use the
+                # first still-UNMATCHED emitted call (not a blind FIFO pop). Drop an
+                # unpairable result rather than mis-pair it — OpenAI-style endpoints
+                # 400 on a tool_call_id that doesn't match a preceding tool_calls id.
+                rid = fr.id if (fr.id and fr.id in emitted_ids) else None
+                if rid is None:
+                    rid = next((i for i in emitted_ids if i not in matched), None)
+                if rid is None:
+                    continue
+                matched.add(rid)
                 resp = fr.response
                 tool_results.append(
                     {

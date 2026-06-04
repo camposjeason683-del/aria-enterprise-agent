@@ -656,11 +656,24 @@ async def put_canvas(
 
 from ag_ui_adk import ADKAgent, add_adk_fastapi_endpoint
 
+def _copilotkit_user_id(run_input) -> str:
+    # F2: bind the ADK session identity to the VERIFIED tenant user (set by
+    # _CopilotKitTenantMiddleware in the same task) instead of the client-supplied
+    # thread_id, namespaced by tenant so sessions can't collide/leak across tenants.
+    from src.infra.tenant_context import current as _cur
+
+    ctx = _cur()
+    if ctx is not None:
+        return f"{ctx.tenant_id}:{ctx.user_id}"
+    return f"thread_user_{getattr(run_input, 'thread_id', 'anon')}"
+
+
 # Create the ADKAgent wrapper for CopilotKit
 copilotkit_agent = ADKAgent(
     adk_agent=root_agent,
     app_name=APP_NAME,
     session_service=session_service,
+    user_id_extractor=_copilotkit_user_id,
 )
 
 # Mount it on FastAPI
