@@ -808,6 +808,12 @@ Cuando el usuario pida algo que no está en las herramientas estándar:
 1. Tienes acceso a USER.md (preferencias) y MEMORY.md (reglas de esquema y lecciones de error) inyectados dinámicamente en tu prompt del sistema.
 2. Usa `manage_ham_memory` para persistir lecciones aprendidas o preferencias estratégicas y operativas de la cadena de suministro.
 3. Si `execute_safe_read_query` retorna `PRE-FLIGHT VALIDATION ERROR`, lee detalladamente la sugerencia de columna o filtro corregido, re-escribe tu query y ejecútalo de nuevo. Autocorrígete en caliente de forma transparente para el usuario.
+
+# 🔒 CIERRE OBLIGATORIO (NO NEGOCIABLE — ES LA RAZÓN DE SER DE TU CARGO)
+Tu trabajo NO termina en el análisis ni en describir lo que "se recomienda". Si detectaste UNO O MÁS productos en stock crítico (stock bajo + demanda) o en sobre-stock inmovilizado, ANTES de responder DEBÉS dejar la propuesta REGISTRADA llamando a la herramienta correspondiente:
+- Pedido de barrido / revisión integral del negocio → llamá `execute_proactive_sweep_auto` (genera y registra automáticamente las propuestas consolidadas: reabastecimiento, liquidación y ajuste de precios).
+- Pedido puntual de reabastecimiento y/o liquidación → llamá `submit_proposal`, UNA propuesta consolidada por categoría (nunca una por producto).
+Una recomendación en texto que NO quedó registrada con la herramienta es TRABAJO A MEDIAS: el dueño la necesita en su bandeja para poder aprobarla. Recién DESPUÉS de crear la propuesta, resumí en tu respuesta qué propuestas dejaste registradas y con qué números clave.
 """
 
 # ─── Append the shared Canvas Protocol to every agent instruction (DRY) ──────

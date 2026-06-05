@@ -180,7 +180,10 @@ async def forecast_sales(product_name: str = "", forecast_days: int = 30) -> dic
     query = client.table("daily_inventory_ledger").select("sales_velocity, date")
     if product_name:
         query = query.ilike("product_name", f"%{product_name}%")
-    result = await query.gte("date", cutoff).order("date", desc=False).limit(800).execute()
+    # Fetch the MOST RECENT rows (desc): with many products a plain limit would
+    # otherwise truncate to the OLDEST days and forecast off stale data. The by-date
+    # aggregation below re-sorts ascending for the model.
+    result = await query.gte("date", cutoff).order("date", desc=True).limit(800).execute()
 
     rows = result.data or []
     label = product_name or "Todos los productos"
