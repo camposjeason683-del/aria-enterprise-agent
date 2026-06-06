@@ -70,3 +70,49 @@ export async function saveCanvas(state: unknown): Promise<void> {
     body: JSON.stringify(state),
   });
 }
+
+// ── Proposals (HITL approval tray) ──────────────────────────────────────────
+// The agent's proactive sweep registers consolidated proposals; the owner
+// approves/rejects them here. items/strategy/recommendation were added in 0007.
+export type ProposalItem = Record<string, unknown> & {
+  name?: string;
+  product?: string;
+  qty?: number;
+  sku?: string;
+  proveedor?: string;
+  costo_unitario?: number;
+  stock_actual?: number;
+  stock_inmovilizado?: number;
+};
+
+export interface Proposal {
+  id: string;
+  title: string;
+  problem: string | null;
+  proposed_action: string | null;
+  urgency: string | null;
+  status: string;
+  category: string | null;
+  estimated_impact: string | null;
+  risk: string | null;
+  strategy: string | null;
+  recommendation: string | null;
+  items: ProposalItem[] | null;
+  created_at: string;
+}
+
+export async function listProposals(status = "pending"): Promise<Proposal[]> {
+  const res = await request(`/api/v1/proposals?status=${encodeURIComponent(status)}`);
+  const data = await res.json();
+  return (data?.proposals as Proposal[]) ?? [];
+}
+
+export async function approveProposal(id: string): Promise<void> {
+  await request(`/api/v1/proposals/${id}/approve`, { method: "POST" });
+}
+
+export async function rejectProposal(id: string, reason = ""): Promise<void> {
+  await request(`/api/v1/proposals/${id}/reject?reason=${encodeURIComponent(reason)}`, {
+    method: "POST",
+  });
+}
