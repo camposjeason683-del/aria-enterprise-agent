@@ -78,7 +78,12 @@ async def submit_proposal(
     before inserting the new one.
     """
     client = await get_supabase()
-    
+    # The tenant client enforces RLS; aria_proposals' WITH CHECK is
+    # is_tenant_member(tenant_id), so the INSERT must carry the caller's tenant_id
+    # (there is no DB default/trigger for it). RLS still verifies the membership.
+    from src.infra.tenant_context import current as _current_ctx
+    _ctx = _current_ctx()
+
     # 1. Infer and normalize category
     def normalize_text_category(cat_str: str, strat_str: str = "", title_str: str = "") -> str:
         text = f"{cat_str or ''} {strat_str or ''} {title_str or ''}".lower()
@@ -123,8 +128,10 @@ async def submit_proposal(
         "proposed_action": proposed_action,
         "urgency": urgency,
         "status": "pending",
-        "category": normalized_cat
+        "category": normalized_cat,
     }
+    if _ctx and _ctx.tenant_id:
+        payload["tenant_id"] = _ctx.tenant_id
     if estimated_impact:
         payload["estimated_impact"] = estimated_impact
     if risk:
