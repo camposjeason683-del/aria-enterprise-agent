@@ -20,6 +20,7 @@ import asyncio
 import math
 import os
 import random
+import uuid
 from datetime import datetime, timedelta
 
 import httpx
@@ -132,10 +133,13 @@ async def main():
     products, suppliers, ledger = [], [], []
     prices = {}
     for i, (name, arch) in enumerate(zip(names, ARCH)):
-        pid = f"P{i:02d}"
+        # ledger.product_id / supplier_catalog.product_id MUST equal products.id —
+        # the sweep joins products on `.in_("id", ledger_product_ids)`. A deterministic
+        # uuid keeps the seed reproducible.
+        pid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"aria-demo-product-{i}"))
         price = round(RNG.uniform(2.5, 28.0), 2)
         prices[name] = price
-        products.append({"tenant_id": t, "sku": f"SKU-{1000 + i}", "name": name, "price": price})
+        products.append({"tenant_id": t, "id": pid, "sku": f"SKU-{1000 + i}", "name": name, "price": price})
         suppliers.append({"tenant_id": t, "product_id": pid, "nombre_original": name,
                           "proveedor": SUPPLIERS[i % len(SUPPLIERS)], "marca": "Genérica"})
         for row in gen_product_series(arch, dates):
