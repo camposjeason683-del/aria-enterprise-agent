@@ -108,10 +108,14 @@ def _classify_heuristic(node_input: types.Content) -> str:
     if hasattr(node_input, "parts") and node_input.parts:
         text = " ".join(p.text for p in node_input.parts if p.text)
 
-    # Intercept background system command before scoring
-    if "sistema: ejecutar barrido proactivo" in text.lower():
+    # Intercept proactive-sweep requests before scoring.
+    low = text.lower()
+    if "sistema: ejecutar barrido proactivo" in low:  # scheduled/cron trigger → full pipeline (sync + advisor)
         log_info("Intercepted proactive sweep command → PROACTIVE", agent="kernel")
         return "PROACTIVE"
+    if "barrido proactivo" in low:  # a human asking for it in natural language → strategic advisor (no sync step)
+        log_info("NL proactive request → STRATEGIC", agent="kernel")
+        return "STRATEGIC"
 
     text = _normalize_text(text)
 
