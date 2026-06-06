@@ -628,14 +628,10 @@ async def detect_dead_stock_and_rebalance() -> dict:
             except (ValueError, TypeError):
                 selling_price = 0.0
 
-        cost_price = prod.get("price")  # B: products has no separate cost column; use price (real) as the cost proxy (was the non-existent base_price → always None → silent zero)
-        if cost_price is None:
-            cost_price = 0.0
-        else:
-            try:
-                cost_price = float(cost_price)
-            except (ValueError, TypeError):
-                cost_price = 0.0
+        # Cost basis: products has no separate cost column, so simulate a realistic
+        # 40% gross margin (cost = 60% of selling price), matching calc_gross_margin.
+        # Using price as BOTH selling and cost gave a 0% margin → 0% discounts / $0 NRV.
+        cost_price = round(selling_price * 0.6, 2)
 
         stock = item.get("stock_end_of_day") or 0
         sales_vel_7d = item.get("sales_velocity") or 0
@@ -1035,14 +1031,10 @@ async def batch_purchase_orders() -> dict:
             except (ValueError, TypeError):
                 selling_price = 0.0
                 
-        cost_price = prod.get("price")  # B: products has no separate cost column; use price (real) as the cost proxy (was the non-existent base_price → always None → silent zero)
-        if cost_price is None:
-            cost_price = 0.0
-        else:
-            try:
-                cost_price = float(cost_price)
-            except (ValueError, TypeError):
-                cost_price = 0.0
+        # Cost basis: products has no separate cost column, so simulate a realistic
+        # 40% gross margin (cost = 60% of selling price), matching calc_gross_margin.
+        # Using price as BOTH selling and cost gave a 0% margin → 0% discounts / $0 NRV.
+        cost_price = round(selling_price * 0.6, 2)
 
         if selling_price == 0.0 and cost_price > 0.0:
             selling_price = cost_price * 1.5
