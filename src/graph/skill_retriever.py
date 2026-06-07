@@ -33,6 +33,7 @@ from src.tools.calculations import (
     calc_sales_forecast,
 )
 from src.tools.forecasting import forecast_sales
+from src.tools.anomaly import detect_anomalies
 from src.tools.database import (
     compare_stock_periods,
     get_stock_alerts,
@@ -177,6 +178,7 @@ _NODE_TOOLS: dict[str, List[Callable]] = {
         analyze_supply_chain_bottlenecks,
         predict_stockouts_and_repurchase,
         detect_dead_stock_and_rebalance,
+        detect_anomalies,
         batch_purchase_orders,
         dynamic_pricing_for_scarcity,
         audit_supplier_performance,

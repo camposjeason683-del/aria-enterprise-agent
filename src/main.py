@@ -706,6 +706,24 @@ async def trigger_proactive_sweep(x_cron_secret: str = Header(default="")):
     return {"tenants": len(tenants), "results": results}
 
 
+@app.post("/api/v1/cron/insight-sweep")
+async def trigger_insight_sweep(x_cron_secret: str = Header(default="")):
+    _require_cron_secret(x_cron_secret)
+    from src.tools.anomaly import detect_anomalies
+
+    tenants = await list_active_tenants()
+    results = []
+    for t in tenants:
+        tid = t["id"]
+        try:
+            r = await run_for_tenant(tid, lambda: detect_anomalies())
+            results.append({"tenant_id": tid, "status": "ok", "anomalies": r.get("count", 0)})
+        except Exception as e:  # noqa: BLE001 — one tenant must not abort the loop
+            log_error("cron insight-sweep failed", tenant_id=tid, error=str(e))
+            results.append({"tenant_id": tid, "status": "error"})
+    return {"tenants": len(tenants), "results": results}
+
+
 @app.post("/api/v1/cron/morning-brief")
 async def trigger_morning_brief(x_cron_secret: str = Header(default="")):
     _require_cron_secret(x_cron_secret)
