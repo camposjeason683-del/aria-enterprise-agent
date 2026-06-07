@@ -58,9 +58,30 @@ export function signIn(email: string, password: string) {
   return authRequest("/api/auth/sessions", { email, password });
 }
 
-// NOTE: no public signUp. Users are provisioned by a company admin
-// (scripts/provision_user.py) so they always land with a tenant membership —
-// self-serve signup created tenant-less orphans the backend rejects (F6).
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "";
+
+/**
+ * Self-serve signup (M5). Hits the backend, which creates the auth user AND a
+ * tenant + admin membership atomically, so the user never lands tenant-less (the
+ * F6 orphan that made us disable signup). Stores the returned session token.
+ */
+export async function signUp(
+  email: string,
+  password: string,
+  companyName: string,
+): Promise<AuthUser> {
+  const res = await fetch(`${BACKEND_URL}/api/v1/signup`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password, company_name: companyName }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.detail ?? "No se pudo crear la cuenta");
+  if (!data.accessToken)
+    throw new Error("Cuenta creada. Verificá tu email para iniciar sesión.");
+  store(data.accessToken, data.refreshToken);
+  return { id: data.user_id, email };
+}
 
 /** Rotate the access token using the stored refresh token. Returns success. */
 export async function refreshSession(): Promise<boolean> {
