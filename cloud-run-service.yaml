@@ -15,27 +15,50 @@ spec:
       containerConcurrency: 80
       timeoutSeconds: 300
       containers:
-      - image: gcr.io/tu-proyecto/aria-os:latest
+      # TODO: replace PROJECT_ID with the real GCP project (or your registry path).
+      - image: gcr.io/PROJECT_ID/aria-os:latest
         ports:
         - name: http1
-          containerPort: 8000
+          containerPort: 8080   # matches the Dockerfile (uvicorn --port 8080)
         env:
         - name: PORT
-          value: "8000"
-        - name: GOOGLE_API_KEY
+          value: "8080"
+        # ── Plain config (not secret) ────────────────────────────────────────
+        - name: INSFORGE_URL
+          value: "https://CHANGE-ME.insforge.app"   # public endpoint, not a secret
+        - name: ALLOWED_ORIGINS
+          value: "https://CHANGE-ME"                  # frontend origin(s), comma-separated
+        # ── Secrets (Secret Manager) — create each secret first, then deploy ──
+        # ARIA-OS uses InsForge + Gemini. No Supabase, no legacy service_role/anon.
+        - name: GEMINI_API_KEY
           valueFrom:
             secretKeyRef:
-              name: google-api-key
+              name: gemini-api-key
               key: latest
-        - name: SUPABASE_URL
+        - name: INSFORGE_API_KEY
           valueFrom:
             secretKeyRef:
-              name: supabase-url
+              name: insforge-api-key
               key: latest
-        - name: SUPABASE_SERVICE_KEY
+        - name: INSFORGE_JWT_SECRET
           valueFrom:
             secretKeyRef:
-              name: supabase-service-key
+              name: insforge-jwt-secret
+              key: latest
+        - name: ARIA_ENCRYPTION_KEY
+          valueFrom:
+            secretKeyRef:
+              name: aria-encryption-key
+              key: latest
+        - name: CRON_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: cron-secret
+              key: latest
+        - name: WEBHOOK_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: webhook-secret
               key: latest
         resources:
           limits:
