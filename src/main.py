@@ -755,6 +755,22 @@ async def import_google_sheet(payload: dict = Body(...), tenant: TenantContext =
     return await connect_google_sheet(url, payload.get("mapping"))
 
 
+# ── WooCommerce connect (M6 onboarding) ──────────────────────────────────────
+@app.post("/api/v1/integrations/woocommerce")
+async def connect_woocommerce(payload: dict = Body(...), tenant: TenantContext = Depends(require_admin)):
+    """Save the tenant's WooCommerce credentials (encrypted at rest). The scheduler's
+    sync then pulls orders → ledger. Admin-only (require_admin)."""
+    from src.tools.integrations import save_tenant_integration
+
+    url = (payload.get("url") or "").strip()
+    key = (payload.get("consumer_key") or "").strip()
+    secret = (payload.get("consumer_secret") or "").strip()
+    if not all([url, key, secret]):
+        raise HTTPException(400, "Faltan url, consumer_key o consumer_secret.")
+    await save_tenant_integration(tenant.tenant_id, url, key, secret)
+    return {"status": "ok", "connected": "woocommerce"}
+
+
 # ── Purchase-order lifecycle (M3) ────────────────────────────────────────────
 @app.post("/api/v1/purchase-orders/{po_id}/{action}")
 async def transition_purchase_order(

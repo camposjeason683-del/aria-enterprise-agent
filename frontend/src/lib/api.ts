@@ -116,3 +116,40 @@ export async function rejectProposal(id: string, reason = ""): Promise<void> {
     method: "POST",
   });
 }
+
+export async function executeProposal(id: string): Promise<void> {
+  await request(`/api/v1/proposals/${id}/execute`, { method: "POST" });
+}
+
+// ── Ingestion / onboarding (M6) ─────────────────────────────────────────────
+export async function connectWooCommerce(
+  url: string,
+  consumer_key: string,
+  consumer_secret: string,
+): Promise<{ status: string }> {
+  const res = await request("/api/v1/integrations/woocommerce", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url, consumer_key, consumer_secret }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.detail ?? "No se pudo conectar WooCommerce");
+  return data;
+}
+
+export interface ImportResult {
+  imported: number;
+  stats: { total: number; ok: number; rejected: number; warned: number };
+  ledger: { rows: number; products_added: number };
+}
+
+export async function importCsv(text: string): Promise<ImportResult> {
+  const res = await request("/api/v1/import/csv", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.detail ?? "No se pudo importar el CSV");
+  return data;
+}
