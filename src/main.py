@@ -233,13 +233,27 @@ async def save_to_storage(data: bytes, filename: str) -> str:
     )
 
 
+async def require_active_subscription(
+    tenant: TenantContext = Depends(require_tenant),
+) -> TenantContext:
+    """Gate the product on the tenant's subscription (M7). A past_due/canceled tenant
+    gets 402 — the load-bearing fix for 'canceled tenant still works'. Billing routes
+    stay open so they can reactivate."""
+    from src.infra.billing import resolve_subscription_status, subscription_active
+
+    status = await resolve_subscription_status(tenant.tenant_id)
+    if not subscription_active(status):
+        raise HTTPException(402, "Suscripción inactiva. Reactivá tu plan para seguir usando ARIA.")
+    return tenant
+
+
 # ─── Chat Endpoint (Multimodal) ─────────────────────────────────────
 @app.post("/api/v1/chat")
 async def chat(
     message: str = Form(""),
     session_id: str = Form(""),
     file: UploadFile | None = File(None),
-    tenant: TenantContext = Depends(require_tenant),
+    tenant: TenantContext = Depends(require_active_subscription),
 ):
     start = time.time()
     # Identity comes from the verified JWT (never a client-supplied form field).
@@ -769,6 +783,39 @@ async def connect_woocommerce(payload: dict = Body(...), tenant: TenantContext =
         raise HTTPException(400, "Faltan url, consumer_key o consumer_secret.")
     await save_tenant_integration(tenant.tenant_id, url, key, secret)
     return {"status": "ok", "connected": "woocommerce"}
+
+
+# ── Billing (M7) ─────────────────────────────────────────────────────────────
+@app.post("/api/v1/webhooks/stripe")
+async def stripe_webhook(request: Request):
+    """Stripe webhook → update the tenant's subscription (idempotent). NOTE: signature
+    verification needs STRIPE_WEBHOOK_SECRET (configure via insforge-cli); until then
+    do not expose publicly."""
+    from src.infra.billing import apply_stripe_event
+
+    try:
+        event = await request.json()
+    except Exception:
+        raise HTTPException(400, "Payload inválido.")
+    return await apply_stripe_event(event)
+
+
+@app.get("/api/v1/billing/status")
+async def billing_status(tenant: TenantContext = Depends(require_tenant)):
+    """The caller tenant's plan + subscription status (for the settings/billing UI)."""
+    from src.infra.billing import resolve_subscription_status
+    from src.infra.tenants import resolve_tenant_tier
+
+    return {
+        "subscription_status": await resolve_subscription_status(tenant.tenant_id),
+        "tier": await resolve_tenant_tier(tenant.tenant_id),
+    }
+
+
+@app.post("/api/v1/billing/checkout")
+async def billing_checkout(payload: dict = Body(...), tenant: TenantContext = Depends(require_admin)):
+    """Start a Stripe Checkout for a plan. Requires Stripe configured in InsForge."""
+    raise HTTPException(501, "Stripe aún no está configurado (configurá las keys con insforge-cli).")
 
 
 # ── Purchase-order lifecycle (M3) ────────────────────────────────────────────
