@@ -40,6 +40,11 @@ def test_proactive_sweep_iterates_tenants_and_isolates_failures(client, monkeypa
 
     monkeypatch.setattr("src.tools.strategic.execute_proactive_sweep_auto", fake_sweep)
 
+    async def fake_eval():  # rules run per tenant too; mock to keep this test DB-free
+        return {"rules_evaluated": 0, "fired": []}
+
+    monkeypatch.setattr("src.tools.automation.evaluate_rules", fake_eval)
+
     r = client.post("/api/v1/cron/proactive-sweep", headers={"X-Cron-Secret": "s3cr3t"})
     assert r.status_code == 200
     body = r.json()

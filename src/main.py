@@ -605,6 +605,62 @@ Como StrategicAdvisor (el COO virtual de ARIA-OS) de la empresa, debes responder
 
 
 
+# ─── Automation rules (if-this-then-that) ────────────────────────────────────
+@app.get("/api/v1/automation-rules")
+async def list_automation_rules(tenant: TenantContext = Depends(require_tenant)):
+    client = await get_supabase()
+    res = (
+        await client.table("automation_rules")
+        .select("*")
+        .order("created_at", desc=True)
+        .execute()
+    )
+    return {"rules": res.data}
+
+
+@app.post("/api/v1/automation-rules")
+async def create_automation_rule(
+    name: str = Form(...),
+    metric: str = Form(...),
+    op: str = Form(...),
+    threshold: float = Form(...),
+    action: str = Form("create_proposal"),
+    tenant: TenantContext = Depends(require_admin),
+):
+    from src.tools.automation import SUPPORTED_METRICS
+
+    if metric not in SUPPORTED_METRICS:
+        raise HTTPException(400, f"Métrica no soportada: {metric}. Opciones: {list(SUPPORTED_METRICS)}")
+    if op not in (">", "<", ">=", "<=", "=="):
+        raise HTTPException(400, "Operador inválido (usá >, <, >=, <=, ==).")
+    client = await get_supabase()
+    res = (
+        await client.table("automation_rules")
+        .insert(
+            {
+                "tenant_id": tenant.tenant_id,
+                "name": name,
+                "metric": metric,
+                "op": op,
+                "threshold": threshold,
+                "action": action,
+                "enabled": True,
+            }
+        )
+        .execute()
+    )
+    return {"status": "created", "rule": (res.data or [None])[0]}
+
+
+@app.delete("/api/v1/automation-rules/{rule_id}")
+async def delete_automation_rule(
+    rule_id: str, tenant: TenantContext = Depends(require_admin)
+):
+    client = await get_supabase()
+    await client.table("automation_rules").delete().eq("id", rule_id).execute()
+    return {"status": "deleted", "rule_id": rule_id}
+
+
 # Cron endpoints: an EXTERNAL scheduler (Render Cron / Cloud Scheduler) hits these
 # with the shared secret. Each iterates the ACTIVE tenants and runs the job under a
 # HEADLESS per-tenant context (run_for_tenant → admin client pinned to tenant_id),
@@ -619,14 +675,30 @@ def _require_cron_secret(provided: str | None) -> None:
 async def trigger_proactive_sweep(x_cron_secret: str = Header(default="")):
     _require_cron_secret(x_cron_secret)
     from src.tools.strategic import execute_proactive_sweep_auto
+    from src.tools.automation import evaluate_rules
+
+    async def _tenant_tick() -> str:
+        # Sweep + rule evaluation under ONE headless tenant context; independent so
+        # one failing never aborts the other.
+        status = "ok"
+        try:
+            await execute_proactive_sweep_auto()
+        except Exception as e:  # noqa: BLE001
+            log_error("cron sweep failed", error=str(e))
+            status = "error"
+        try:
+            await evaluate_rules()
+        except Exception as e:  # noqa: BLE001
+            log_error("cron evaluate_rules failed", error=str(e))
+        return status
 
     tenants = await list_active_tenants()
     results = []
     for t in tenants:
         tid = t["id"]
         try:
-            await run_for_tenant(tid, lambda: execute_proactive_sweep_auto())
-            results.append({"tenant_id": tid, "status": "ok"})
+            status = await run_for_tenant(tid, _tenant_tick)
+            results.append({"tenant_id": tid, "status": status})
         except Exception as e:  # noqa: BLE001 — one tenant must not abort the loop
             log_error("cron proactive-sweep failed", tenant_id=tid, error=str(e))
             results.append({"tenant_id": tid, "status": "error"})
