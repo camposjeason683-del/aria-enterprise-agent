@@ -1,0 +1,29 @@
+# Scheduler wiring (M4): hits the deployed backend's cron endpoints in order.
+# compile-ledger MUST run before proactive-sweep (the sweep reads the ledger it
+# produces). Activate by setting the repo secrets BACKEND_URL + CRON_SECRET.
+name: Scheduled brains
+
+on:
+  schedule:
+    - cron: "0 * * * *"        # hourly — sync + sweep
+    - cron: "30 6 * * *"       # daily 06:30 UTC — morning brief
+  workflow_dispatch: {}
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    if: ${{ vars.BACKEND_URL != '' }}
+    steps:
+      - name: compile-ledger → proactive-sweep → insight-sweep
+        run: |
+          set -e
+          H="X-Cron-Secret: ${{ secrets.CRON_SECRET }}"
+          B="${{ vars.BACKEND_URL }}"
+          curl -fsS -X POST "$B/api/v1/cron/compile-ledger"  -H "$H"
+          curl -fsS -X POST "$B/api/v1/cron/proactive-sweep" -H "$H"
+          curl -fsS -X POST "$B/api/v1/cron/insight-sweep"   -H "$H"
+      - name: morning-brief (daily run only)
+        if: ${{ github.event.schedule == '30 6 * * *' }}
+        run: |
+          curl -fsS -X POST "${{ vars.BACKEND_URL }}/api/v1/cron/morning-brief" \
+            -H "X-Cron-Secret: ${{ secrets.CRON_SECRET }}"
