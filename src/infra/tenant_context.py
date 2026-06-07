@@ -23,6 +23,10 @@ class TenantContext:
     # The user's InsForge access token, used to build RLS-scoped data clients.
     # repr=False so it never lands in logs/tracebacks (I2 of insforge-adapter).
     jwt: str = field(repr=False)
+    # Headless cron path: no user JWT; the data layer uses the admin client pinned
+    # to tenant_id (RLS bypassed but every table explicitly scoped). Default False
+    # keeps the normal request path unchanged.
+    headless: bool = False
 
 
 _current: ContextVar[TenantContext | None] = ContextVar(
@@ -36,6 +40,12 @@ def set_current(ctx: TenantContext) -> None:
 
 def current() -> TenantContext | None:
     return _current.get()
+
+
+def clear_current() -> None:
+    """Reset the contextvar — used between tenants in the headless cron loop so one
+    tenant's context never leaks into the next iteration."""
+    _current.set(None)
 
 
 def current_jwt() -> str:

@@ -32,6 +32,7 @@ def test_proposals_require_auth(client):
     assert client.get("/api/v1/proposals").status_code == 401
 
 
-def test_cron_is_501_pending_multitenant(client):
-    assert client.post("/api/v1/cron/morning-brief").status_code == 501
-    assert client.post("/api/v1/cron/proactive-sweep").status_code == 501
+def test_cron_requires_secret(client):
+    # The cron endpoints are now implemented; without the shared secret they 403.
+    assert client.post("/api/v1/cron/morning-brief").status_code == 403
+    assert client.post("/api/v1/cron/proactive-sweep").status_code == 403

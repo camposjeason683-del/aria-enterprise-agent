@@ -12,6 +12,22 @@ from __future__ import annotations
 from typing import Any
 
 
+async def list_active_tenants(*, client: Any = None) -> list[dict]:
+    """Active tenants for the headless cron loops. System (admin) lookup — no JWT.
+    Falls back to all tenants if `subscription_status` is unavailable."""
+    if client is None:
+        from src.infra.db import get_system_client
+
+        client = get_system_client()
+    res = (
+        await client.table("tenants")
+        .select("id, subscription_status")
+        .eq("subscription_status", "active")
+        .execute()
+    )
+    return res.data or []
+
+
 async def resolve_tenant_tier(tenant_id: str, *, client: Any = None) -> str:
     if client is None:
         from src.infra.db import get_system_client

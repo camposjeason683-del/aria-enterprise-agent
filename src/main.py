@@ -11,7 +11,7 @@ from datetime import datetime
 import json
 
 from dotenv import load_dotenv
-from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import Body, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from google.adk.runners import Runner
 from google.genai import types
@@ -27,7 +27,8 @@ from src.infra.logger import log_error, log_info  # noqa: E402
 from src.infra.rate_limiter import check_rate_limit, rate_limiter  # noqa: E402
 from src.infra.session_insforge import InsForgeSessionService  # noqa: E402
 from src.infra.tenant_context import TenantContext  # noqa: E402
-from src.infra.tenants import resolve_tenant_tier  # noqa: E402
+from src.infra.tenants import list_active_tenants, resolve_tenant_tier  # noqa: E402
+from src.infra.cron_runner import run_for_tenant  # noqa: E402
 
 
 # ─── Lifecycle ───────────────────────────────────────────────────────
@@ -604,18 +605,51 @@ Como StrategicAdvisor (el COO virtual de ARIA-OS) de la empresa, debes responder
 
 
 
-# NOTE (S6): the cron endpoints below were single-tenant. In the SaaS model they
-# must iterate the ACTIVE tenants and run each pipeline under that tenant's
-# context (a service JWT per tenant) so the agent's tools stay RLS-scoped. Until
-# that per-tenant loop lands they return 501 instead of running without a tenant.
-@app.post("/api/v1/cron/morning-brief")
-async def trigger_morning_brief():
-    raise HTTPException(501, "Cron multi-tenant pendiente (S6): iterar tenants activos.")
+# Cron endpoints: an EXTERNAL scheduler (Render Cron / Cloud Scheduler) hits these
+# with the shared secret. Each iterates the ACTIVE tenants and runs the job under a
+# HEADLESS per-tenant context (run_for_tenant → admin client pinned to tenant_id),
+# isolating per-tenant failures so one bad tenant never aborts the loop.
+def _require_cron_secret(provided: str | None) -> None:
+    expected = os.environ.get("CRON_SECRET", "")
+    if not expected or provided != expected:
+        raise HTTPException(403, "Cron secret inválido o ausente.")
 
 
 @app.post("/api/v1/cron/proactive-sweep")
-async def trigger_proactive_sweep():
-    raise HTTPException(501, "Cron multi-tenant pendiente (S6): iterar tenants activos.")
+async def trigger_proactive_sweep(x_cron_secret: str = Header(default="")):
+    _require_cron_secret(x_cron_secret)
+    from src.tools.strategic import execute_proactive_sweep_auto
+
+    tenants = await list_active_tenants()
+    results = []
+    for t in tenants:
+        tid = t["id"]
+        try:
+            await run_for_tenant(tid, lambda: execute_proactive_sweep_auto())
+            results.append({"tenant_id": tid, "status": "ok"})
+        except Exception as e:  # noqa: BLE001 — one tenant must not abort the loop
+            log_error("cron proactive-sweep failed", tenant_id=tid, error=str(e))
+            results.append({"tenant_id": tid, "status": "error"})
+    log_info(f"cron proactive-sweep ran for {len(tenants)} tenant(s)", agent="cron")
+    return {"tenants": len(tenants), "results": results}
+
+
+@app.post("/api/v1/cron/morning-brief")
+async def trigger_morning_brief(x_cron_secret: str = Header(default="")):
+    _require_cron_secret(x_cron_secret)
+    from src.tools.strategic import gather_full_business_snapshot
+
+    tenants = await list_active_tenants()
+    results = []
+    for t in tenants:
+        tid = t["id"]
+        try:
+            snap = await run_for_tenant(tid, lambda: gather_full_business_snapshot())
+            results.append({"tenant_id": tid, "status": "ok", "snapshot": snap})
+        except Exception as e:  # noqa: BLE001
+            log_error("cron morning-brief failed", tenant_id=tid, error=str(e))
+            results.append({"tenant_id": tid, "status": "error"})
+    return {"tenants": len(tenants), "results": results}
 
 
 @app.get("/api/v1/health")
