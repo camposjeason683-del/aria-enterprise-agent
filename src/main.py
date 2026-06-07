@@ -481,8 +481,8 @@ async def reject_proposal(
 async def execute_proposal(
     proposal_id: str, tenant: TenantContext = Depends(require_admin)
 ):
-    from src.tools.strategic import execute_approved_proposal
-    res = await execute_approved_proposal(proposal_id)
+    from src.tools.proposal_execution import apply_proposal_effects
+    res = await apply_proposal_effects(proposal_id)
     if "error" in res:
         raise HTTPException(status_code=400, detail=res["error"])
     return res
@@ -699,6 +699,22 @@ async def import_google_sheet(payload: dict = Body(...), tenant: TenantContext =
     if not url:
         raise HTTPException(400, "Falta 'url' del Google Sheet.")
     return await connect_google_sheet(url, payload.get("mapping"))
+
+
+# ── Purchase-order lifecycle (M3) ────────────────────────────────────────────
+@app.post("/api/v1/purchase-orders/{po_id}/{action}")
+async def transition_purchase_order(
+    po_id: str, action: str, tenant: TenantContext = Depends(require_admin)
+):
+    """Move a PO forward: confirm → dispatch → deliver. Idempotent / order-checked."""
+    if action not in ("confirm", "dispatch", "deliver"):
+        raise HTTPException(400, "Acción inválida (confirm|dispatch|deliver).")
+    from src.tools.purchase_orders import transition_po
+
+    res = await transition_po(po_id, action)
+    if "error" in res:
+        raise HTTPException(400, res["error"])
+    return res
 
 
 # Cron endpoints: an EXTERNAL scheduler (Render Cron / Cloud Scheduler) hits these
