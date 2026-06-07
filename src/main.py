@@ -661,6 +661,46 @@ async def delete_automation_rule(
     return {"status": "deleted", "rule_id": rule_id}
 
 
+# ── Data ingestion: CSV / Google-Sheets import (M2) ──────────────────────────
+@app.post("/api/v1/import/preview")
+async def import_preview(payload: dict = Body(...), tenant: TenantContext = Depends(require_admin)):
+    """Parse + validate WITHOUT committing — inferred mapping + validation report."""
+    from src.tools.data_quality import validate_records
+    from src.tools.importers import parse_csv
+
+    text = payload.get("text") or ""
+    if len(text) > MAX_FILE_SIZE:
+        raise HTTPException(413, "Archivo demasiado grande (máx 10MB).")
+    records, mapping = parse_csv(text, payload.get("mapping"))
+    report = validate_records(records)
+    return {
+        "mapping": mapping, "stats": report["stats"], "sample": report["valid"][:10],
+        "rejected": report["rejected"][:50], "warnings": report["warnings"][:50],
+    }
+
+
+@app.post("/api/v1/import/csv")
+async def import_csv_route(payload: dict = Body(...), tenant: TenantContext = Depends(require_admin)):
+    """Parse + validate + ingest a CSV for the caller's tenant (compiles the ledger)."""
+    from src.tools.importers import import_csv
+
+    text = payload.get("text") or ""
+    if len(text) > MAX_FILE_SIZE:
+        raise HTTPException(413, "Archivo demasiado grande (máx 10MB).")
+    return await import_csv(text, payload.get("mapping"))
+
+
+@app.post("/api/v1/integrations/google-sheet")
+async def import_google_sheet(payload: dict = Body(...), tenant: TenantContext = Depends(require_admin)):
+    """Fetch a PUBLIC Google Sheet as CSV and ingest it for the caller's tenant."""
+    from src.tools.importers import connect_google_sheet
+
+    url = payload.get("url") or ""
+    if not url:
+        raise HTTPException(400, "Falta 'url' del Google Sheet.")
+    return await connect_google_sheet(url, payload.get("mapping"))
+
+
 # Cron endpoints: an EXTERNAL scheduler (Render Cron / Cloud Scheduler) hits these
 # with the shared secret. Each iterates the ACTIVE tenants and runs the job under a
 # HEADLESS per-tenant context (run_for_tenant → admin client pinned to tenant_id),
