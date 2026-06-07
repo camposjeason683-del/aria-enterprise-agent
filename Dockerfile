@@ -12,4 +12,6 @@ RUN pip install --no-cache-dir .
 COPY src/ src/
 
 EXPOSE 8080
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8080"]
+# Shell form so the platform's injected $PORT wins (Render/Fly), falling back to 8080
+# (Cloud Run sets PORT=8080; local Docker uses 8080).
+CMD uvicorn src.main:app --host 0.0.0.0 --port ${PORT:-8080}
