@@ -1,0 +1,31 @@
+# Render Blueprint — backend one-click deploy. In Render: New → Blueprint → connect this
+# repo. It reads this file. Set the secret env vars (sync:false → "Set in dashboard")
+# after the first deploy. Render injects $PORT; the Dockerfile binds to it.
+# (Cloud Run alternative: cloud-run-service.yaml.)
+services:
+  - type: web
+    name: aria-os-backend
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: INSFORGE_URL
+        sync: false          # https://<project>.<region>.insforge.app
+      - key: INSFORGE_API_KEY
+        sync: false          # secret
+      - key: INSFORGE_JWT_SECRET
+        sync: false          # secret
+      - key: ARIA_ENCRYPTION_KEY
+        sync: false          # secret — MUST match the one that encrypted tenant_integrations
+      - key: GEMINI_API_KEY
+        sync: false          # secret
+      - key: CRON_SECRET
+        sync: false          # secret — same value goes in the GitHub Actions secret
+      - key: WEBHOOK_SECRET
+        sync: false          # secret
+      - key: ALLOWED_ORIGINS
+        sync: false          # the deployed frontend origin, e.g. https://app.tudominio.com
+      - key: INSFORGE_AI_MODEL
+        value: gemini-2.5-flash
