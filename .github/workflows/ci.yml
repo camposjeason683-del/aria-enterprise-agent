@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"   # matches the Dockerfile
+      - run: pip install -e .
+      - name: pytest (unit; live RLS gates are skipped without ARIA_LIVE_TESTS)
+        run: pytest -q
+        env:
+          INSFORGE_URL: http://localhost
+          INSFORGE_API_KEY: test-key
+          INSFORGE_JWT_SECRET: test-secret
+          GEMINI_API_KEY: test-key
+          # A valid Fernet key for the crypto import (test-only, not a secret).
+          ARIA_ENCRYPTION_KEY: "M2tWfQ2bXo1mJ8tq3vH5pK7sZ4nC6yB9dF0gA1eR2uU="
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm run build
+        env:
+          NEXT_PUBLIC_INSFORGE_URL: http://localhost
+          NEXT_PUBLIC_INSFORGE_ANON_KEY: test
+          NEXT_PUBLIC_BACKEND_URL: http://localhost:8080

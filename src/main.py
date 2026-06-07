@@ -36,6 +36,9 @@ from src.infra.cron_runner import run_for_tenant  # noqa: E402
 async def lifespan(app: FastAPI):
     # No warm-up call here: get_supabase() is now tenant-scoped and there is no
     # tenant context at startup. The shared InsForge HTTP client is created lazily.
+    from src.infra.observability import init_observability
+
+    init_observability()  # Sentry if SENTRY_DSN is set; no-op otherwise (M4)
     log_info("🟢 ARIA-OS starting up")
     yield
     log_info("🔴 ARIA-OS shutting down")
