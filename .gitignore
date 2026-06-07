@@ -1,6 +1,8 @@
 # Environments
 .env
 .env.*
+# template (no secrets) — must stay tracked:
+!.env.example
 .venv/
 env/
 venv/
