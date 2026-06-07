@@ -7,7 +7,7 @@ the query layer is exercised in the live smoke test, not here.
 """
 import math
 
-from src.tools.forecasting import _fit_forecast, _linear_naive
+from src.tools.forecasting import _backtest, _fit_forecast, _linear_naive
 
 
 def _seasonal_series(n: int) -> list[float]:
@@ -76,3 +76,41 @@ def test_linear_naive_core_is_pure_and_bounded():
     for i in range(5):
         assert lo[i] <= point[i] <= hi[i]
         assert point[i] >= 0.0
+
+
+# ── _backtest (rolling-origin accuracy) ──────────────────────────────────────
+def test_backtest_on_seasonal_series_reports_reasonable_metrics():
+    bt = _backtest(_seasonal_series(120))
+    assert bt["status"] == "success"
+    assert bt["folds"] >= 1
+    assert isinstance(bt["mape"], float) and bt["mape"] >= 0.0
+    assert bt["mape"] < 40.0  # clean synthetic series → low error
+    assert isinstance(bt["rmse"], float) and bt["rmse"] >= 0.0
+    assert 0.0 <= bt["interval_coverage"] <= 1.0
+    assert bt["n_points_scored"] > 0
+
+
+def test_backtest_insufficient_history():
+    bt = _backtest(_seasonal_series(10))  # < min_train(9) + horizon(14)
+    assert bt["status"] == "insufficient_history"
+    assert bt["folds"] == 0
+
+
+def test_backtest_is_deterministic():
+    series = _seasonal_series(120)
+    assert _backtest(series) == _backtest(series)  # I5: no RNG
+
+
+def test_backtest_keys_present_and_typed():
+    bt = _backtest(_seasonal_series(120))
+    assert set(bt) == {
+        "status", "folds", "horizon", "mape", "rmse",
+        "interval_coverage", "n_points_scored",
+    }
+
+
+def test_backtest_handles_zero_actuals_without_crash():
+    # Holdout steps with actual==0 are skipped for MAPE (no ZeroDivisionError).
+    series = [0.0 if i % 4 == 0 else 5.0 + 0.1 * i for i in range(60)]
+    bt = _backtest(series)
+    assert bt["status"] in ("success", "insufficient_history")
