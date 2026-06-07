@@ -153,3 +153,14 @@ export async function importCsv(text: string): Promise<ImportResult> {
   if (!res.ok) throw new Error(data?.detail ?? "No se pudo importar el CSV");
   return data;
 }
+
+// ── Billing (M7) ────────────────────────────────────────────────────────────
+export interface BillingStatus {
+  subscription_status: string;
+  tier: string;
+}
+
+export async function billingStatus(): Promise<BillingStatus> {
+  const res = await request("/api/v1/billing/status");
+  return res.json();
+}
