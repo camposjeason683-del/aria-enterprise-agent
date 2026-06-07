@@ -671,6 +671,31 @@ def _require_cron_secret(provided: str | None) -> None:
         raise HTTPException(403, "Cron secret inválido o ausente.")
 
 
+@app.post("/api/v1/cron/compile-ledger")
+async def trigger_compile_ledger(x_cron_secret: str = Header(default="")):
+    """KEYSTONE: compile each tenant's cached WooCommerce orders into the daily
+    ledger. MUST run before proactive-sweep in the scheduler order — the sweep /
+    forecast / anomalies all read the ledger this produces."""
+    _require_cron_secret(x_cron_secret)
+    from src.tools.ledger_etl import compile_ledger_for_tenant
+
+    tenants = await list_active_tenants()
+    results = []
+    for t in tenants:
+        tid = t["id"]
+        try:
+            r = await run_for_tenant(tid, lambda: compile_ledger_for_tenant())
+            results.append({
+                "tenant_id": tid, "status": "ok",
+                "rows": r.get("rows", 0), "products_added": r.get("products_added", 0),
+            })
+        except Exception as e:  # noqa: BLE001 — one tenant must not abort the loop
+            log_error("cron compile-ledger failed", tenant_id=tid, error=str(e))
+            results.append({"tenant_id": tid, "status": "error"})
+    log_info(f"cron compile-ledger ran for {len(tenants)} tenant(s)", agent="cron")
+    return {"tenants": len(tenants), "results": results}
+
+
 @app.post("/api/v1/cron/proactive-sweep")
 async def trigger_proactive_sweep(x_cron_secret: str = Header(default="")):
     _require_cron_secret(x_cron_secret)
