@@ -150,6 +150,68 @@ def _fit_forecast(values, horizon: int, *, season: int = 7) -> dict:
     }
 
 
+def _backtest(values, season: int = 7, *, horizon: int = 14, folds: int = 3) -> dict:
+    """Rolling-origin backtest of the SAME model `_fit_forecast` selects, so the
+    reported accuracy describes the live forecast. PURE (reuses `_fit_forecast`),
+    deterministic, best-effort.
+
+    Anchors the most recent holdout at the end of the series and steps back by
+    `horizon` per fold (expanding train window). Per scored fold:
+        train = values[:t],  actual = values[t:t+horizon]
+    Aggregates over all steps of all scored folds: MAPE (skips actual==0 steps),
+    RMSE, interval_coverage (lo<=actual<=hi). Returns
+    {status:"insufficient_history", folds:0} when no fold can be scored — the live
+    forecast still succeeds; the backtest is informational only.
+    """
+    vals = [float(v) for v in values]
+    n = len(vals)
+    horizon = max(1, int(horizon))
+    folds = max(1, int(folds))
+    min_train = max(season + 2, 4)  # enough for ETS/linear; SARIMAX kicks in at 2*season+2
+    if n < min_train + horizon:
+        return {"status": "insufficient_history", "folds": 0}
+
+    sq_errs: list[float] = []
+    pct_errs: list[float] = []
+    covered = scored_steps = scored_folds = 0
+    for k in range(folds):
+        end = n - k * horizon
+        t = end - horizon
+        if t < min_train:
+            break
+        core = _fit_forecast(vals[:t], horizon, season=season)
+        if core["status"] != "success":
+            continue
+        point, lo, hi = core["point"], core["lo"], core["hi"]
+        scored_folds += 1
+        for i in range(horizon):
+            a, p = vals[t + i], point[i]
+            sq_errs.append((a - p) ** 2)
+            covered += 1 if lo[i] <= a <= hi[i] else 0
+            scored_steps += 1
+            if a > 0:
+                pct_errs.append(abs(a - p) / a)
+
+    if scored_steps == 0:
+        return {"status": "insufficient_history", "folds": 0}
+
+    return {
+        "status": "success",
+        "folds": scored_folds,
+        "horizon": horizon,
+        "mape": round(sum(pct_errs) / len(pct_errs) * 100, 1) if pct_errs else None,
+        "rmse": round((sum(sq_errs) / len(sq_errs)) ** 0.5, 2),
+        "interval_coverage": round(covered / scored_steps, 2),
+        "n_points_scored": scored_steps,
+    }
+
+
+# TODO(xreg): para paridad con BQML ARIMA_PLUS_XREG (demanda en función de
+# precio/promo) acá entraría SARIMAX(exog=...). Bloqueado hoy: products tiene un
+# único `price` y el ledger no guarda precio por fecha → falta una fuente de
+# price-history densa por (product_id, date). Hasta entonces, univariado.
+
+
 async def forecast_sales(product_name: str = "", forecast_days: int = 30) -> dict:
     """Proyecta la demanda/ventas futuras de un producto (o del total) con un
     modelo estadístico de series de tiempo (SARIMAX / Holt-Winters), incluyendo
@@ -209,6 +271,9 @@ async def forecast_sales(product_name: str = "", forecast_days: int = 30) -> dic
     if core["status"] != "success":
         return {**core, "product": label}
 
+    # Best-effort backtest of the SAME model on the same series → report accuracy.
+    bt = _backtest(values, season=7)
+
     horizon = core["horizon"]
     # Future date labels continue from the last observed date.
     try:
@@ -223,6 +288,17 @@ async def forecast_sales(product_name: str = "", forecast_days: int = 30) -> dic
         for i in range(horizon)
     ]
     total = round(sum(core["point"]), 2)
+    summary = (
+        f"Proyección a {horizon} días para '{label}': total ≈ {total} "
+        f"(modelo {core['model_used']}, {core['data_points']} puntos históricos)."
+    )
+    if bt.get("status") == "success" and bt.get("mape") is not None:
+        weeks = max(1, (bt["horizon"] * bt["folds"]) // 7)
+        summary += (
+            f" Precisión (backtest): ~{bt['mape']:.1f}% de error MAPE sobre las "
+            f"últimas ~{weeks} semana(s), con cobertura del intervalo del "
+            f"{int(bt['interval_coverage'] * 100)}%."
+        )
     return {
         "status": "success",
         "product": label,
@@ -233,8 +309,6 @@ async def forecast_sales(product_name: str = "", forecast_days: int = 30) -> dic
         "history": history,
         "forecast": forecast,
         "proyeccion_total": total,
-        "summary": (
-            f"Proyección a {horizon} días para '{label}': total ≈ {total} "
-            f"(modelo {core['model_used']}, {core['data_points']} puntos históricos)."
-        ),
+        "backtest": bt,
+        "summary": summary,
     }
