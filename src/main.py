@@ -661,6 +661,60 @@ async def delete_automation_rule(
     return {"status": "deleted", "rule_id": rule_id}
 
 
+# ── Self-serve signup (M5) ───────────────────────────────────────────────────
+@app.post("/api/v1/signup")
+async def signup(payload: dict = Body(...)):
+    """Public: create the auth user, then a tenant + admin membership ATOMICALLY
+    (RPC). Idempotent — re-running for an existing user completes any missing
+    tenant/membership (fixes the F6 orphan-tenant bug that disabled signup)."""
+    import httpx
+
+    email = (payload.get("email") or "").strip().lower()
+    password = payload.get("password") or ""
+    company = (payload.get("company_name") or "").strip()
+    if not email or not password or not company:
+        raise HTTPException(400, "Faltan email, password o company_name.")
+    if len(password) < 8:
+        raise HTTPException(400, "La contraseña debe tener al menos 8 caracteres.")
+
+    url = os.environ["INSFORGE_URL"].rstrip("/")
+    async with httpx.AsyncClient(timeout=30.0) as http:
+        r = await http.post(f"{url}/api/auth/users?client_type=server",
+                            json={"email": email, "password": password, "name": company})
+        if r.status_code == 409:  # already registered → sign in (idempotent)
+            r = await http.post(f"{url}/api/auth/sessions?client_type=server",
+                                json={"email": email, "password": password})
+        if r.status_code >= 400:
+            raise HTTPException(400, "No se pudo crear/autenticar la cuenta (¿email ya registrado con otra clave?).")
+        d = r.json()
+
+    uid = (d.get("user") or {}).get("id")
+    if not uid:
+        raise HTTPException(500, "Respuesta de autenticación inesperada.")
+
+    admin = get_system_client()
+    m = await admin.table("tenant_users").select("tenant_id").eq("user_id", uid).limit(1).execute()
+    if m.data:  # existing membership (idempotent re-run / previously orphaned user)
+        tid, created = m.data[0]["tenant_id"], False
+    else:
+        rpc = await admin.rpc("create_tenant_with_admin",
+                              {"p_user_id": uid, "p_company_name": company})
+        data = rpc.data
+        if isinstance(data, str):
+            tid = data
+        elif isinstance(data, list) and data:
+            tid = data[0] if isinstance(data[0], str) else data[0].get("create_tenant_with_admin")
+        elif isinstance(data, dict):
+            tid = data.get("create_tenant_with_admin") or data.get("id")
+        else:
+            tid = None
+        created = True
+
+    log_info("signup", user_id=uid, tenant_id=tid, agent="auth")
+    return {"status": "ok", "user_id": uid, "tenant_id": tid, "tenant_created": created,
+            "accessToken": d.get("accessToken"), "refreshToken": d.get("refreshToken")}
+
+
 # ── Data ingestion: CSV / Google-Sheets import (M2) ──────────────────────────
 @app.post("/api/v1/import/preview")
 async def import_preview(payload: dict = Body(...), tenant: TenantContext = Depends(require_admin)):
