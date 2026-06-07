@@ -334,3 +334,35 @@ def get_tenant_client(user_jwt: str, http: httpx.AsyncClient | None = None) -> I
     if not user_jwt:
         raise InsForgeError("CONFIG", "A tenant JWT is required for get_tenant_client()")
     return InsForgeClient(user_jwt, http=http)
+
+
+class _TenantScopedAdminClient(InsForgeClient):
+    """Admin-key client that pins EVERY ``.table()`` to one ``tenant_id``.
+
+    For the HEADLESS cron path only (no user JWT): the admin key bypasses RLS, so
+    every business read/write is scoped explicitly to the tenant — a sweep can never
+    touch another tenant's rows even if a call site forgets a filter. All business
+    tables carry ``tenant_id``; the deterministic sweep never uses ``.rpc`` (raw
+    SQL), so nothing escapes the scope. Inserts already set ``tenant_id`` in the
+    payload — the pinned filter is a harmless query param on POST (it only constrains
+    the return=representation, not which row is inserted).
+    """
+
+    def __init__(self, tenant_id: str, http: httpx.AsyncClient | None = None):
+        key = os.environ.get("INSFORGE_API_KEY", "")
+        if not key:
+            raise InsForgeError("CONFIG", "INSFORGE_API_KEY is not set in the environment")
+        super().__init__(key, http=http)
+        self._tenant_id = tenant_id
+
+    def table(self, name: str) -> _Query:
+        return super().table(name).eq("tenant_id", self._tenant_id)
+
+
+def get_tenant_scoped_admin_client(
+    tenant_id: str, http: httpx.AsyncClient | None = None
+) -> InsForgeClient:
+    """Headless cron client: admin key + every table pinned to ``tenant_id``."""
+    if not tenant_id:
+        raise InsForgeError("CONFIG", "tenant_id is required for get_tenant_scoped_admin_client()")
+    return _TenantScopedAdminClient(tenant_id, http=http)

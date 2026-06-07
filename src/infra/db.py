@@ -24,7 +24,13 @@ import time
 
 import httpx
 
-from src.infra.insforge import InsForgeClient, close_http, get_admin_client, get_tenant_client
+from src.infra.insforge import (
+    InsForgeClient,
+    close_http,
+    get_admin_client,
+    get_tenant_client,
+    get_tenant_scoped_admin_client,
+)
 from src.infra.tenant_context import current as _current_ctx
 from src.infra.tenant_context import current_jwt
 
@@ -68,7 +74,11 @@ async def get_supabase() -> InsForgeClient:
     Falls back to the demo tenant only when there's no tenant context in scope
     (the CopilotKit/sandbox path); the chat path always has one.
     """
-    if _current_ctx() is not None:
+    ctx = _current_ctx()
+    if ctx is not None:
+        if getattr(ctx, "headless", False):
+            # Cron path: no user JWT → admin client pinned to this tenant_id.
+            return get_tenant_scoped_admin_client(ctx.tenant_id)
         return get_tenant_client(current_jwt())
     if _ALLOW_DEMO_FALLBACK:
         return get_tenant_client(await _demo_jwt())
