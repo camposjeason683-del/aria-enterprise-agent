@@ -206,10 +206,56 @@ def _backtest(values, season: int = 7, *, horizon: int = 14, folds: int = 3) -> 
     }
 
 
-# TODO(xreg): para paridad con BQML ARIMA_PLUS_XREG (demanda en función de
-# precio/promo) acá entraría SARIMAX(exog=...). Bloqueado hoy: products tiene un
-# único `price` y el ledger no guarda precio por fecha → falta una fuente de
-# price-history densa por (product_id, date). Hasta entonces, univariado.
+def _fit_forecast_xreg(values, exog, future_exog, horizon: int, *, season: int = 7) -> dict:
+    """SARIMAX con un regresor EXÓGENO (p.ej. precio): demanda ~ precio (paridad con
+    BQML ARIMA_PLUS_XREG). `exog` alinea 1:1 con `values`; `future_exog` tiene largo
+    `horizon` (la senda asumida del driver — por defecto el último precio sostenido).
+    Cae al `_fit_forecast` univariado si el exog no puede ayudar (serie corta, sin
+    varianza, o sin statsmodels). PURO + determinístico; clippea en 0.
+    """
+    vals = [float(v) for v in values]
+    ex = [float(x) for x in exog]
+    fex = [float(x) for x in future_exog]
+    n = len(vals)
+    horizon = max(1, min(int(horizon), 90))
+    if n < _MIN_SEASONS * season + 2 or len(ex) != n or len(fex) != horizon:
+        return _fit_forecast(vals, horizon, season=season)
+    mean_ex = sum(ex) / n
+    if sum((x - mean_ex) ** 2 for x in ex) / n <= 1e-9:  # exog constante → no aporta
+        return _fit_forecast(vals, horizon, season=season)
+    try:
+        import numpy as np
+        import statsmodels.api as sm
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            res = sm.tsa.SARIMAX(
+                np.asarray(vals, dtype=float),
+                exog=np.asarray(ex, dtype=float).reshape(-1, 1),
+                order=(1, 1, 1),
+                seasonal_order=(1, 0, 1, season),
+                enforce_stationarity=False,
+                enforce_invertibility=False,
+            ).fit(disp=False)
+            fc = res.get_forecast(horizon, exog=np.asarray(fex, dtype=float).reshape(-1, 1))
+            mean = fc.predicted_mean
+            ci = fc.conf_int(alpha=0.2)
+        point = [max(0.0, float(m)) for m in mean]
+        lo = [max(0.0, float(ci[i, 0])) for i in range(horizon)]
+        hi = [max(0.0, float(ci[i, 1])) for i in range(horizon)]
+    except Exception:
+        return _fit_forecast(vals, horizon, season=season)
+
+    return {
+        "status": "success",
+        "model_used": f"SARIMAX-XREG(1,1,1)(1,0,1,{season})",
+        "horizon": horizon,
+        "point": [round(p, 2) for p in point],
+        "lo": [round(x, 2) for x in lo],
+        "hi": [round(x, 2) for x in hi],
+        "data_points": n,
+        "exog_used": True,
+    }
 
 
 async def forecast_sales(product_name: str = "", forecast_days: int = 30) -> dict:
@@ -239,7 +285,7 @@ async def forecast_sales(product_name: str = "", forecast_days: int = 30) -> dic
     # Pull up to ~1 year so the model can see weekly/seasonal structure (more than
     # calc_sales_forecast's 30-day window). RLS-scoped to the tenant via the JWT.
     cutoff = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
-    query = client.table("daily_inventory_ledger").select("sales_velocity, date")
+    query = client.table("daily_inventory_ledger").select("sales_velocity, date, price")
     if product_name:
         query = query.ilike("product_name", f"%{product_name}%")
     # Fetch the MOST RECENT rows (desc): with many products a plain limit would
@@ -256,18 +302,34 @@ async def forecast_sales(product_name: str = "", forecast_days: int = 30) -> dic
             "message": f"No hay historial de ventas para '{label}'.",
         }
 
-    # Aggregate velocity by date (sums across products when no filter is given).
+    # Aggregate velocity (sum) + price (avg) by date.
     by_date: dict[str, float] = defaultdict(float)
+    price_by_date: dict[str, list] = defaultdict(list)
     for r in rows:
         d = r.get("date")
         if d is None:
             continue
-        by_date[str(d)[:10]] += float(r.get("sales_velocity") or 0)
+        key = str(d)[:10]
+        by_date[key] += float(r.get("sales_velocity") or 0)
+        p = r.get("price")
+        if p is not None:
+            price_by_date[key].append(float(p))
 
     dates = sorted(by_date)
     values = [by_date[d] for d in dates]
 
-    core = _fit_forecast(values, forecast_days, season=7)
+    # XREG: for a SPECIFIC product, use its daily price as an exogenous regressor
+    # (demanda ~ precio). Only when price exists for every day AND it varied; else the
+    # univariate model. Future price is held at the last observed value.
+    core = None
+    if product_name and all(price_by_date.get(d) for d in dates):
+        price_series = [sum(price_by_date[d]) / len(price_by_date[d]) for d in dates]
+        if max(price_series) - min(price_series) > 1e-6:
+            core = _fit_forecast_xreg(
+                values, price_series, [price_series[-1]] * forecast_days, forecast_days, season=7
+            )
+    if core is None:
+        core = _fit_forecast(values, forecast_days, season=7)
     if core["status"] != "success":
         return {**core, "product": label}
 

@@ -76,16 +76,21 @@ def weekly_factor(dow: int, strength: float) -> float:
     return 1 + (base - 1) * strength
 
 
-def gen_product_series(arch, dates):
+def gen_product_series(arch, dates, base_price):
     kind, base, trend, season = arch
     rows = []
     for d, date in enumerate(dates):
         prog = d / DAYS
-        # Velocity: realistic series (trend + weekly seasonality + noise) for forecasting.
+        # Promo: ~cada 21 días, una baja de precio del 20% por 3 días → uplift de
+        # demanda. Esta es la señal precio↔demanda que SARIMAX-XREG aprende.
+        on_promo = (d % 21) in (0, 1, 2)
+        price = round(base_price * (0.80 if on_promo else 1.0), 2)
+        promo_uplift = 1.35 if on_promo else 1.0
+        # Velocity: realistic series (trend + weekly seasonality + noise + promo).
         decay = 1.0
         if kind == "deadstock" and prog > 0.78:  # demand collapses in the last ~5 weeks
             decay = max(0.05, 1 - (prog - 0.78) / 0.22)
-        vel = max(0.0, base * weekly_factor(date.weekday(), season) * (1 + trend * prog) * decay * RNG.gauss(1, 0.13))
+        vel = max(0.0, base * weekly_factor(date.weekday(), season) * (1 + trend * prog) * decay * promo_uplift * RNG.gauss(1, 0.13))
         # Stock: per-archetype band, decoupled from depletion so the END state reliably
         # carries the intended signal (critical ≤15, deadstock >50) for the sweep.
         if kind == "critical":
@@ -98,7 +103,7 @@ def gen_product_series(arch, dates):
             stock = 45 + 10 * math.sin(d / 7.0) + RNG.gauss(0, 3)
         prod = round(max(0.0, RNG.gauss(vel, 2)), 1) if (kind != "deadstock" and d % 9 == 0) else 0.0
         rows.append({"date": date.strftime("%Y-%m-%d"), "vel": round(vel, 1),
-                     "stock": round(max(0.0, stock), 1), "prod": prod})
+                     "stock": round(max(0.0, stock), 1), "prod": prod, "price": price})
     return rows
 
 
@@ -142,10 +147,10 @@ async def main():
         products.append({"tenant_id": t, "id": pid, "sku": f"SKU-{1000 + i}", "name": name, "price": price})
         suppliers.append({"tenant_id": t, "product_id": pid, "nombre_original": name,
                           "proveedor": SUPPLIERS[i % len(SUPPLIERS)], "marca": "Genérica"})
-        for row in gen_product_series(arch, dates):
+        for row in gen_product_series(arch, dates, price):
             ledger.append({"tenant_id": t, "date": row["date"], "product_id": pid, "product_name": name,
                            "stock_end_of_day": row["stock"], "sales_velocity": row["vel"],
-                           "production_detected": row["prod"]})
+                           "production_detected": row["prod"], "price": row["price"]})
 
     # Orders coherent with sales: 2–4/day, line_items reference real products, ~12% invalid status.
     orders = []

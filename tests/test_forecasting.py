@@ -7,7 +7,7 @@ the query layer is exercised in the live smoke test, not here.
 """
 import math
 
-from src.tools.forecasting import _backtest, _fit_forecast, _linear_naive
+from src.tools.forecasting import _backtest, _fit_forecast, _fit_forecast_xreg, _linear_naive
 
 
 def _seasonal_series(n: int) -> list[float]:
@@ -114,3 +114,27 @@ def test_backtest_handles_zero_actuals_without_crash():
     series = [0.0 if i % 4 == 0 else 5.0 + 0.1 * i for i in range(60)]
     bt = _backtest(series)
     assert bt["status"] in ("success", "insufficient_history")
+
+
+# ── _fit_forecast_xreg (price as exogenous regressor) ────────────────────────
+def test_xreg_falls_back_when_exog_is_constant():
+    r = _fit_forecast_xreg(_seasonal_series(60), [5.0] * 60, [5.0] * 30, 30)
+    assert r["status"] == "success"
+    assert "XREG" not in r["model_used"]  # constant exog → univariate fallback
+
+
+def test_xreg_falls_back_on_length_mismatch():
+    r = _fit_forecast_xreg(_seasonal_series(60), [5.0] * 59, [5.0] * 30, 30)
+    assert "XREG" not in r["model_used"]
+
+
+def test_xreg_engages_and_bounds_hold_when_price_varies():
+    # demand = 10 + 1.5*price + weekly seasonality; price alternates 3 vs 8.
+    price = [3.0 if (i // 7) % 2 == 0 else 8.0 for i in range(80)]
+    vals = [max(0.0, 10.0 + 1.5 * price[i] + 2.0 * math.sin(2 * math.pi * i / 7)) for i in range(80)]
+    r = _fit_forecast_xreg(vals, price, [price[-1]] * 20, 20)
+    assert r["status"] == "success"
+    assert "XREG" in r["model_used"]  # varying exog → the price-aware model engages
+    for i in range(20):
+        assert r["lo"][i] <= r["point"][i] <= r["hi"][i]
+        assert r["point"][i] >= 0.0
