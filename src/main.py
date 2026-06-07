@@ -818,6 +818,46 @@ async def billing_checkout(payload: dict = Body(...), tenant: TenantContext = De
     raise HTTPException(501, "Stripe aún no está configurado (configurá las keys con insforge-cli).")
 
 
+# ── Owner dashboard + what-if forecast (M8) ──────────────────────────────────
+@app.get("/api/v1/dashboard/summary")
+async def dashboard_summary(tenant: TenantContext = Depends(require_active_subscription)):
+    """Business pulse: pending decisions, recent anomalies, KPIs — one read for the home."""
+    from src.tools.ledger_common import latest_ledger_date
+
+    client = await get_supabase()
+    props = (await client.table("aria_proposals")
+             .select("id, title, category, urgency, status, created_at")
+             .eq("status", "pending").order("created_at", desc=True).limit(10).execute()).data or []
+    products = (await client.table("products").select("id, name").limit(500).execute()).data or []
+    latest = await latest_ledger_date(client)
+    anomalies = []
+    try:
+        from src.tools.anomaly import detect_anomalies
+        an = await detect_anomalies(top_n=5)
+        anomalies = (an.get("anomalies") or an.get("findings") or [])[:5]
+    except Exception as e:  # noqa: BLE001 — dashboard must render even if a sub-query fails
+        log_error("dashboard anomalies failed", error=str(e))
+    return {
+        "pending_proposals": props,
+        "pending_count": len(props),
+        "product_count": len(products),
+        "products": [p.get("name") for p in products][:100],
+        "latest_ledger_date": latest,
+        "anomalies": anomalies,
+    }
+
+
+@app.get("/api/v1/forecast")
+async def forecast_endpoint(
+    product: str = "", days: int = 14, price: float = 0.0,
+    tenant: TenantContext = Depends(require_active_subscription),
+):
+    """Forecast a product's demand. Pass ``price`` (> 0) for a what-if re-forecast (XREG)."""
+    from src.tools.forecasting import forecast_sales
+
+    return await forecast_sales(product, days, price_override=price)
+
+
 # ── Purchase-order lifecycle (M3) ────────────────────────────────────────────
 @app.post("/api/v1/purchase-orders/{po_id}/{action}")
 async def transition_purchase_order(

@@ -258,7 +258,8 @@ def _fit_forecast_xreg(values, exog, future_exog, horizon: int, *, season: int =
     }
 
 
-async def forecast_sales(product_name: str = "", forecast_days: int = 30) -> dict:
+async def forecast_sales(product_name: str = "", forecast_days: int = 30,
+                         price_override: float = 0.0) -> dict:
     """Proyecta la demanda/ventas futuras de un producto (o del total) con un
     modelo estadístico de series de tiempo (SARIMAX / Holt-Winters), incluyendo
     intervalos de confianza. Reemplaza a BQML sin depender de BigQuery.
@@ -325,8 +326,11 @@ async def forecast_sales(product_name: str = "", forecast_days: int = 30) -> dic
     if product_name and all(price_by_date.get(d) for d in dates):
         price_series = [sum(price_by_date[d]) / len(price_by_date[d]) for d in dates]
         if max(price_series) - min(price_series) > 1e-6:
+            # What-if: when a price_override is given, hold the FUTURE price at it
+            # (the slider price); otherwise keep the last observed price.
+            future_price = price_override if price_override and price_override > 0 else price_series[-1]
             core = _fit_forecast_xreg(
-                values, price_series, [price_series[-1]] * forecast_days, forecast_days, season=7
+                values, price_series, [future_price] * forecast_days, forecast_days, season=7
             )
     if core is None:
         core = _fit_forecast(values, forecast_days, season=7)
