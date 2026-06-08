@@ -143,14 +143,37 @@ export interface ImportResult {
   ledger: { rows: number; products_added: number };
 }
 
-export async function importCsv(text: string): Promise<ImportResult> {
-  const res = await request("/api/v1/import/csv", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text }),
-  });
+export type Mapping = Record<string, string>;
+
+export interface PreviewResult {
+  headers: string[];
+  mapping: Mapping;
+  stats: { total: number; ok: number; rejected: number; warned: number };
+  sample: Array<Record<string, unknown>>;
+  rejected: Array<{ index: number; errors: string[]; raw: Record<string, unknown> }>;
+  warnings: Array<{ index: number; warnings: string[] }>;
+  possible_duplicates: string[][];
+}
+
+/** Parse + validate a file (.csv/.xlsx) WITHOUT importing — for the mapping/preview step. */
+export async function importPreview(file: File, mapping?: Mapping): Promise<PreviewResult> {
+  const form = new FormData();
+  form.append("file", file);
+  if (mapping) form.append("mapping", JSON.stringify(mapping));
+  const res = await request("/api/v1/import/preview", { method: "POST", body: form });
   const data = await res.json();
-  if (!res.ok) throw new Error(data?.detail ?? "No se pudo importar el CSV");
+  if (!res.ok) throw new Error(data?.detail ?? "No se pudo leer el archivo");
+  return data;
+}
+
+/** Commit the import of a file with the (possibly user-adjusted) column mapping. */
+export async function importFile(file: File, mapping?: Mapping): Promise<ImportResult> {
+  const form = new FormData();
+  form.append("file", file);
+  if (mapping) form.append("mapping", JSON.stringify(mapping));
+  const res = await request("/api/v1/import/csv", { method: "POST", body: form });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.detail ?? "No se pudo importar");
   return data;
 }
 

@@ -1,36 +1,43 @@
-"""CSV / Google-Sheets ingestion for tenants without WooCommerce.
+"""CSV / Excel / Google-Sheets ingestion for tenants without WooCommerce.
 
-Maps a user's columns to the canonical sales record, validates with data_quality, then
-feeds the SAME keystone path as WooCommerce: synthesise ``wc_orders_cache`` rows (one
-line-item per record) and call ``compile_ledger_for_tenant``. One ingestion pipeline,
-not two — the ledger is always produced by the M1 ETL.
+Robust file parsing (any real, messy export) feeding the SAME keystone path as
+WooCommerce: map a user's columns → the canonical sales record, validate with
+data_quality, synthesise ``wc_orders_cache`` rows and call ``compile_ledger_for_tenant``.
 
-Idempotent re-import: each record gets a DETERMINISTIC synthetic ``order_id`` (stable
-hash of its content + occurrence index), so re-uploading the same file upserts in place
-(0011 UNIQUE(tenant_id,order_id)) instead of double-counting.
+Robustness (no new deps — pandas/openpyxl/charset_normalizer are already installed):
+- ``.xlsx``/``.xls`` via ``pandas.read_excel``; CSV/TXT via ``pandas.read_csv``.
+- Auto delimiter (``,`` / ``;`` / tab) via ``csv.Sniffer`` — the typical LatAm Excel
+  export is semicolon-delimited and would otherwise parse as one column.
+- Auto encoding (UTF-8 / Latin-1 / …) via ``charset_normalizer``.
+- Junk title rows before the header are skipped (header-row detection by mapping score).
+
+Idempotent re-import: each record gets a DETERMINISTIC synthetic ``order_id`` (stable hash
+of its content + occurrence), so re-uploading the same file upserts in place (0011).
 """
 from __future__ import annotations
 
-import csv
 import hashlib
 import io
 import re
 from collections import Counter
-from typing import Any, Optional
+from typing import Optional
 
 from src.infra.db import get_supabase
 from src.infra.tenant_context import current
 from src.tools.data_quality import validate_records
-from src.tools.ledger_etl import compile_ledger_for_tenant
+from src.tools.ledger_etl import _norm, compile_ledger_for_tenant
 
-# Canonical field → the set of header aliases we accept when auto-mapping.
+# Canonical field → header aliases we accept when auto-mapping.
 _ALIASES = {
-    "date": ("date", "fecha", "order_date", "día", "dia"),
-    "product_name": ("product_name", "product", "producto", "item", "nombre", "name", "sku_name"),
-    "quantity": ("quantity", "qty", "cantidad", "units", "unidades"),
-    "price": ("price", "precio", "unit_price", "precio_unitario", "amount"),
+    "date": ("date", "fecha", "order_date", "día", "dia", "fecha_venta", "fecha de venta"),
+    "product_name": ("product_name", "product", "producto", "item", "nombre", "name",
+                     "sku_name", "descripcion", "descripción", "artículo", "articulo"),
+    "quantity": ("quantity", "qty", "cantidad", "units", "unidades", "cant"),
+    "price": ("price", "precio", "unit_price", "precio_unitario", "amount", "importe",
+              "precio_unit", "p_unit"),
     "status": ("status", "estado"),
 }
+_FILE_MAX_HEADER_SKIP = 4   # try skipping up to N junk rows before the real header
 
 
 def infer_mapping(headers: list[str]) -> dict[str, str]:
@@ -39,22 +46,109 @@ def infer_mapping(headers: list[str]) -> dict[str, str]:
     mapping: dict[str, str] = {}
     for canonical, aliases in _ALIASES.items():
         for raw, n in norm.items():
-            if n in aliases:
+            if n in aliases or n.replace("_", " ") in aliases:
                 mapping[canonical] = raw
                 break
     return mapping
 
 
+# ── robust parsing ───────────────────────────────────────────────────────────
+def _decode(content: bytes) -> str:
+    """Decode bytes to text, auto-detecting the encoding (Latin-1/UTF-8/…)."""
+    try:
+        from charset_normalizer import from_bytes
+
+        best = from_bytes(content).best()
+        if best is not None:
+            return str(best)
+    except Exception:  # noqa: BLE001
+        pass
+    return content.decode("utf-8", errors="replace")
+
+
+def _sniff_delimiter(text: str) -> str:
+    """Detect the CSV delimiter from a sample (`,` `;` tab `|`); default comma."""
+    import csv
+
+    sample = "\n".join(text.splitlines()[:25])
+    try:
+        return csv.Sniffer().sniff(sample, delimiters=",;\t|").delimiter
+    except Exception:  # noqa: BLE001
+        return ","
+
+
+def parse_table(content: bytes, filename: str = "", mapping: Optional[dict] = None
+                ) -> tuple[list[dict], list[str], dict]:
+    """PURE: raw file bytes → (canonical records, detected headers, mapping used).
+
+    Handles .xlsx/.xls + CSV/TXT with any delimiter/encoding, skipping junk title rows
+    by picking the header row whose columns map best to the canonical fields."""
+    import pandas as pd
+
+    name = (filename or "").lower()
+    is_excel = name.endswith((".xlsx", ".xls"))
+    text = None if is_excel else _decode(content)
+    sep = "," if is_excel else _sniff_delimiter(text)
+
+    best = None  # (df, headers, inferred_mapping, score)
+    for skip in range(_FILE_MAX_HEADER_SKIP):
+        try:
+            if is_excel:
+                df = pd.read_excel(io.BytesIO(content), dtype=str, header=skip)
+            else:
+                df = pd.read_csv(io.StringIO(text), sep=sep, engine="python", dtype=str,
+                                 skip_blank_lines=True, skiprows=skip)
+        except Exception:  # noqa: BLE001 — try the next header offset
+            continue
+        if df is None or df.shape[1] == 0 or df.shape[0] == 0:
+            continue
+        headers = [str(h) for h in df.columns]
+        inferred = infer_mapping(headers)
+        score = len(inferred)
+        if best is None or score > best[3]:
+            best = (df, headers, inferred, score)
+        if score >= 2:   # found the real header (date + product, etc.)
+            break
+
+    if best is None:
+        return [], [], (mapping or {})
+
+    df, headers, inferred, _ = best
+    df = df.fillna("")
+    use = mapping or inferred
+    records = [
+        {canon: str(row[src]).strip() for canon, src in use.items() if src in df.columns}
+        for _, row in df.iterrows()
+    ]
+    return records, headers, use
+
+
 def parse_csv(text: str, mapping: Optional[dict] = None) -> tuple[list[dict], dict]:
-    """Parse CSV text → (canonical records, mapping used). Pure. ``mapping`` maps
-    canonical field → raw header; inferred from the header row when omitted."""
-    reader = csv.DictReader(io.StringIO(text))
-    headers = reader.fieldnames or []
-    mp = mapping or infer_mapping(headers)
-    records = []
-    for raw in reader:
-        records.append({canon: raw.get(src) for canon, src in mp.items()})
-    return records, mp
+    """Backwards-compatible CSV text parse (delegates to the robust core)."""
+    records, _headers, used = parse_table(text.encode("utf-8"), "data.csv", mapping)
+    return records, used
+
+
+def detect_duplicate_products(records: list[dict], threshold: float = 0.86) -> list[list[str]]:
+    """PURE: groups of product names that look like the same product (warn-only — never
+    auto-merged, since "Coca 500ml"/"Coca 1L" must stay distinct)."""
+    import difflib
+
+    names = sorted({r["product_name"] for r in records if r.get("product_name")})
+    groups: list[list[str]] = []
+    seen: set[str] = set()
+    for i, a in enumerate(names):
+        if a in seen:
+            continue
+        na = _norm(a)
+        similar = [b for b in names[i + 1:]
+                   if b not in seen and na != _norm(b)
+                   and difflib.SequenceMatcher(None, na, _norm(b)).ratio() >= threshold]
+        if similar:
+            group = [a] + similar
+            groups.append(group)
+            seen.update(group)
+    return groups
 
 
 def _synthetic_order_id(rec: dict, occurrence: int) -> int:
@@ -105,16 +199,33 @@ async def import_records(records: list[dict]) -> dict:
     }
 
 
-async def import_csv(text: str, mapping: Optional[dict] = None) -> dict:
-    """Parse + import CSV text for the current tenant."""
-    records, used = await _parse_async(text, mapping)
+def preview_table(content: bytes, filename: str = "", mapping: Optional[dict] = None) -> dict:
+    """Validate WITHOUT committing — everything the mapping UI needs (PURE)."""
+    records, headers, used = parse_table(content, filename, mapping)
+    report = validate_records(records)
+    return {
+        "headers": headers,
+        "mapping": used,
+        "stats": report["stats"],
+        "sample": report["valid"][:10],
+        "rejected": report["rejected"][:50],
+        "warnings": report["warnings"][:50],
+        "possible_duplicates": detect_duplicate_products(report["valid"])[:20],
+    }
+
+
+async def import_table(content: bytes, filename: str = "", mapping: Optional[dict] = None) -> dict:
+    """Parse (robust) + validate + ingest a file for the current tenant."""
+    records, headers, used = parse_table(content, filename, mapping)
     result = await import_records(records)
     result["mapping"] = used
+    result["headers"] = headers
     return result
 
 
-async def _parse_async(text: str, mapping: Optional[dict]):
-    return parse_csv(text, mapping)
+async def import_csv(text: str, mapping: Optional[dict] = None) -> dict:
+    """Backwards-compatible: import CSV text (used by the Google-Sheets path)."""
+    return await import_table(text.encode("utf-8"), "data.csv", mapping)
 
 
 def _sheet_csv_url(url: str) -> Optional[str]:
@@ -139,5 +250,5 @@ async def connect_google_sheet(url: str, mapping: Optional[dict] = None) -> dict
     async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as http:
         r = await http.get(csv_url)
         r.raise_for_status()
-        text = r.text
-    return await import_csv(text, mapping)
+        content = r.content
+    return await import_table(content, "sheet.csv", mapping)

@@ -733,32 +733,43 @@ async def signup(payload: dict = Body(...)):
 
 
 # ── Data ingestion: CSV / Google-Sheets import (M2) ──────────────────────────
-@app.post("/api/v1/import/preview")
-async def import_preview(payload: dict = Body(...), tenant: TenantContext = Depends(require_admin)):
-    """Parse + validate WITHOUT committing — inferred mapping + validation report."""
-    from src.tools.data_quality import validate_records
-    from src.tools.importers import parse_csv
+def _parse_mapping(mapping: str) -> dict | None:
+    if not mapping:
+        return None
+    try:
+        m = json.loads(mapping)
+        return m if isinstance(m, dict) and m else None
+    except Exception:
+        raise HTTPException(400, "mapping inválido (debe ser JSON).")
 
-    text = payload.get("text") or ""
-    if len(text) > MAX_FILE_SIZE:
+
+@app.post("/api/v1/import/preview")
+async def import_preview(
+    file: UploadFile = File(...), mapping: str = Form(""),
+    tenant: TenantContext = Depends(require_admin),
+):
+    """Parse (robust: .xlsx/csv, auto delimiter+encoding) + validate WITHOUT committing —
+    detected headers + mapping + sample + rejected rows + possible duplicates."""
+    from src.tools.importers import preview_table
+
+    content = await file.read()
+    if len(content) > MAX_FILE_SIZE:
         raise HTTPException(413, "Archivo demasiado grande (máx 10MB).")
-    records, mapping = parse_csv(text, payload.get("mapping"))
-    report = validate_records(records)
-    return {
-        "mapping": mapping, "stats": report["stats"], "sample": report["valid"][:10],
-        "rejected": report["rejected"][:50], "warnings": report["warnings"][:50],
-    }
+    return preview_table(content, file.filename or "", _parse_mapping(mapping))
 
 
 @app.post("/api/v1/import/csv")
-async def import_csv_route(payload: dict = Body(...), tenant: TenantContext = Depends(require_admin)):
-    """Parse + validate + ingest a CSV for the caller's tenant (compiles the ledger)."""
-    from src.tools.importers import import_csv
+async def import_csv_route(
+    file: UploadFile = File(...), mapping: str = Form(""),
+    tenant: TenantContext = Depends(require_admin),
+):
+    """Parse + validate + ingest a file (.csv/.xlsx) for the caller's tenant (compiles the ledger)."""
+    from src.tools.importers import import_table
 
-    text = payload.get("text") or ""
-    if len(text) > MAX_FILE_SIZE:
+    content = await file.read()
+    if len(content) > MAX_FILE_SIZE:
         raise HTTPException(413, "Archivo demasiado grande (máx 10MB).")
-    return await import_csv(text, payload.get("mapping"))
+    return await import_table(content, file.filename or "", _parse_mapping(mapping))
 
 
 @app.post("/api/v1/integrations/google-sheet")

@@ -1,9 +1,63 @@
 """Unit tests for the CSV/Sheets importer (pure parts): header mapping, CSV parsing,
-records→synthetic-orders, deterministic order ids, and Google-Sheets URL handling.
+records→synthetic-orders, deterministic order ids, Google-Sheets URL handling, and the
+robust file parser (xlsx, auto delimiter/encoding, junk headers, duplicate detection).
 """
+import io
+
 from src.tools.importers import (
-    _sheet_csv_url, _synthetic_order_id, infer_mapping, parse_csv, records_to_orders,
+    _sheet_csv_url, _synthetic_order_id, detect_duplicate_products, infer_mapping,
+    parse_csv, parse_table, records_to_orders,
 )
+
+
+# ── robust file parsing (parse_table) ────────────────────────────────────────
+def test_parse_table_semicolon_and_spanish_headers():
+    # The typical LatAm Excel export: semicolon-delimited, accented Spanish headers.
+    raw = "Fecha de Venta;Producto;Cantidad;Precio\n2026-05-01;Tomate;3;2,5\n".encode("utf-8")
+    recs, headers, m = parse_table(raw, "ventas.csv")
+    assert m == {"date": "Fecha de Venta", "product_name": "Producto",
+                 "quantity": "Cantidad", "price": "Precio"}
+    assert recs[0]["product_name"] == "Tomate" and recs[0]["price"] == "2,5"
+
+
+def test_parse_table_latin1_encoding():
+    recs, _, _ = parse_table("fecha,producto,cantidad\n2026-05-01,Café,2\n".encode("latin-1"), "x.csv")
+    assert recs[0]["product_name"] == "Café"
+
+
+def test_parse_table_xlsx():
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["fecha", "producto", "cantidad", "precio"])
+    ws.append(["2026-05-01", "Leche", 4, 1.5])
+    buf = io.BytesIO()
+    wb.save(buf)
+    recs, _, _ = parse_table(buf.getvalue(), "ventas.xlsx")
+    assert recs[0] == {"date": "2026-05-01", "product_name": "Leche",
+                       "quantity": "4", "price": "1.5"}
+
+
+def test_parse_table_skips_junk_header_rows():
+    raw = "Reporte de ventas\nGenerado hoy\nfecha,producto,cantidad\n2026-05-01,Pan,7\n".encode("utf-8")
+    recs, headers, _ = parse_table(raw, "r.csv")
+    assert headers == ["fecha", "producto", "cantidad"]
+    assert recs[0]["product_name"] == "Pan"
+
+
+def test_parse_table_explicit_mapping_override():
+    raw = "f,p,q\n2026-05-01,Pan,7\n".encode("utf-8")
+    recs, _, m = parse_table(raw, "r.csv", {"date": "f", "product_name": "p", "quantity": "q"})
+    assert recs[0] == {"date": "2026-05-01", "product_name": "Pan", "quantity": "7"}
+    assert m["date"] == "f"
+
+
+def test_detect_duplicate_products():
+    dups = detect_duplicate_products(
+        [{"product_name": "Coca Cola"}, {"product_name": "Coca-Cola"}, {"product_name": "Pan"}])
+    assert dups == [["Coca Cola", "Coca-Cola"]]
+    assert detect_duplicate_products([{"product_name": "A"}, {"product_name": "B"}]) == []
 
 
 def test_infer_mapping_matches_aliases_including_spanish():
