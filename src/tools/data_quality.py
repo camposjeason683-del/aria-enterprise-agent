@@ -26,15 +26,28 @@ _MONTH_DAYS = (31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
 
 
 def coerce_number(v: Any) -> Optional[float]:
-    """Best-effort numeric coercion; None on non-numeric / NaN / inf. Strips $ , and spaces."""
+    """Best-effort numeric coercion; None on non-numeric / NaN / inf. Handles $, %, spaces,
+    and BOTH decimal conventions: US (``1,234.56``) and LatAm/EU (``1.234,56`` · ``2,5``) —
+    essential for semicolon-delimited Excel exports where the decimal is a comma."""
     if isinstance(v, bool):
         return None
     if isinstance(v, (int, float)):
         f = float(v)
     else:
-        s = str(v or "").strip().replace("$", "").replace(",", "").replace(" ", "")
+        s = str(v or "").strip().replace("$", "").replace("%", "").replace(" ", "")
         if not s:
             return None
+        has_dot, has_comma = "." in s, "," in s
+        if has_dot and has_comma:
+            if s.rfind(",") > s.rfind("."):            # 1.234,56 → EU (dot=thousands)
+                s = s.replace(".", "").replace(",", ".")
+            else:                                       # 1,234.56 → US (comma=thousands)
+                s = s.replace(",", "")
+        elif has_comma:
+            if re.match(r"^-?\d{1,3}(,\d{3})+$", s):     # 1,000 / 12,345,678 → thousands
+                s = s.replace(",", "")
+            else:                                        # 2,5 → comma-decimal
+                s = s.replace(",", ".")
         try:
             f = float(s)
         except ValueError:

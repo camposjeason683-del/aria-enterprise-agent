@@ -19,6 +19,15 @@ def test_coerce_number_handles_formats_and_junk():
     assert coerce_number(float("inf")) is None
 
 
+def test_coerce_number_locale_decimals():
+    # The comma-decimal case (LatAm/EU) — essential for semicolon-delimited Excel exports.
+    assert coerce_number("2,5") == 2.5            # comma-decimal
+    assert coerce_number("1.234,56") == 1234.56   # EU: dot thousands, comma decimal
+    assert coerce_number("1,234.56") == 1234.56   # US: comma thousands, dot decimal
+    assert coerce_number("1,000") == 1000.0       # comma thousands
+    assert coerce_number("12,345,678") == 12345678.0
+
+
 def test_parse_date_formats_and_invalids():
     assert parse_date("2026-03-01") == "2026-03-01"
     assert parse_date("2026-3-1") == "2026-03-01"
