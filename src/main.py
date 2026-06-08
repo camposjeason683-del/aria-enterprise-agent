@@ -309,6 +309,18 @@ async def chat(
     if not parts:
         raise HTTPException(400, "Envía un mensaje, imagen o archivo.")
 
+    # Media turns analyse the file(s) DIRECTLY with Gemini — the multi-agent Runner drops
+    # non-text parts somewhere in its session/router pipeline, so an image/audio/video/PDF
+    # would otherwise reach the model as text-only. The tool-using agent stays on the
+    # text-only path below.
+    if had_media:
+        from src.tools.multimodal import analyze_attachments
+
+        reply = await analyze_attachments(parts, message)
+        duration = round((time.time() - start) * 1000, 2)
+        log_info("Chat multimodal completed", user_id=user_id, agent="multimodal", duration_ms=duration)
+        return {"response": reply, "agent": "multimodal", "remaining_requests": rate.remaining}
+
     # 4. Session (seed tenant identity into ADK state for tools + persistence)
     session = await get_or_create_session(
         user_id,

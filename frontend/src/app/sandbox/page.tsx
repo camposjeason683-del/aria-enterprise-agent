@@ -3,6 +3,7 @@
 import React, { useState, useRef, useEffect, useMemo } from "react";
 import { CopilotKit, useCopilotChatInternal } from "@copilotkit/react-core";
 import { getToken } from "@/lib/auth";
+import { chatMultimodal } from "@/lib/api";
 import { motion, AnimatePresence, LayoutGroup } from "motion/react";
 import {
   Zap,
@@ -12,7 +13,6 @@ import {
   Send,
   Sparkles,
   Clock,
-  ChevronRight,
   GitBranch,
   GitCommit,
   GitPullRequest,
@@ -27,7 +27,9 @@ import {
   Lock,
   Shield,
   FileText,
-  RotateCcw
+  RotateCcw,
+  Paperclip,
+  Mic
 } from "lucide-react";
 import {
   appendTurn,
@@ -176,6 +178,13 @@ export default function SandboxPage() {
 function SandboxContent() {
   const { messages, sendMessage, isLoading, setMessages, stopGeneration } = useCopilotChatInternal();
   const [inputValue, setInputValue] = useState("");
+  // Multimodal attachments (audio/video/PDF/image/docs) → routed through /api/v1/chat.
+  const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
+  const [mmBusy, setMmBusy] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordChunksRef = useRef<Blob[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -377,9 +386,84 @@ function SandboxContent() {
 
   // -- HANDLERS --
 
+  // Multimodal turn: attached files (audio/video/PDF/image/docs) → the agent analyses
+  // them NATIVELY via /api/v1/chat. We create the timeline node (appendTurn) and write
+  // the reply straight into it (same shape as the streamed-capture effect), so the tree
+  // stays the single source of truth — CopilotKit is bypassed for this one turn.
+  const handleMultimodalSubmit = async (rawText: string) => {
+    const files = attachedFiles;
+    const summary = `📎 ${files.length} adjunto${files.length > 1 ? "s" : ""}: ${files.map((f) => f.name).join(", ")}`;
+    const text = rawText.trim() ? `${rawText.trim()}\n${summary}` : summary;
+
+    const result = appendTurn({ nodes, branches, activeNodeId, activeBranchId }, { text });
+    setNodes(result.nodes);
+    setBranches(result.branches);
+    setActiveNodeId(result.activeNodeId);
+    setActiveBranchId(result.activeBranchId);
+    setInputValue("");
+    setAttachedFiles([]);
+    setMmBusy(true);
+    const newNodeId = result.newNodeId;
+    setMessages(makeSerializable(compileMessagesForPath(getActivePath(newNodeId, result.nodes))));
+
+    let reply: string;
+    try {
+      const res = await chatMultimodal(rawText.trim(), files);
+      reply = res.response ?? "(sin respuesta)";
+    } catch (err) {
+      reply = "No pude procesar el archivo: " + (err instanceof Error ? err.message : "error");
+    } finally {
+      setMmBusy(false);
+    }
+
+    const assistant = [{ id: "asst-" + newNodeId, role: "assistant", content: reply }];
+    setNodes((prev) => {
+      const node = prev[newNodeId];
+      if (!node) return prev;
+      const parentCards = node.parentId ? prev[node.parentId]?.activeCards ?? {} : {};
+      return {
+        ...prev,
+        [newNodeId]: { ...node, assistantMessages: assistant, activeCards: parseCardsFromMessage(reply, parentCards, newNodeId) },
+      };
+    });
+    const snap = result.nodes[newNodeId];
+    const nextNodes = { ...result.nodes, [newNodeId]: { ...snap, assistantMessages: assistant } };
+    setMessages(makeSerializable(compileMessagesForPath(getActivePath(newNodeId, nextNodes))));
+  };
+
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mr = new MediaRecorder(stream);
+      recordChunksRef.current = [];
+      mr.ondataavailable = (ev) => { if (ev.data.size > 0) recordChunksRef.current.push(ev.data); };
+      mr.onstop = () => {
+        const blob = new Blob(recordChunksRef.current, { type: "audio/webm" });
+        const f = new File([blob], `nota-de-voz-${Date.now()}.webm`, { type: "audio/webm" });
+        setAttachedFiles((prev) => [...prev, f]);
+        stream.getTracks().forEach((t) => t.stop());
+      };
+      mediaRecorderRef.current = mr;
+      mr.start();
+      setIsRecording(true);
+    } catch {
+      setIsRecording(false);
+    }
+  };
+
+  const stopRecording = () => {
+    mediaRecorderRef.current?.stop();
+    mediaRecorderRef.current = null;
+    setIsRecording(false);
+  };
+
   const handleSubmit = async (e?: React.FormEvent, directText?: string) => {
     e?.preventDefault();
     const rawText = directText || inputValue;
+    if (attachedFiles.length > 0 && !isLoading && !mmBusy) {
+      await handleMultimodalSubmit(rawText);
+      return;
+    }
     if (!rawText.trim() || isLoading) return;
 
     // If a card is selected (and this isn't an already-scoped directText), prepend the
@@ -1630,32 +1714,77 @@ function SandboxContent() {
           <form onSubmit={handleSubmit} className="relative flex items-center group">
             {/* Glowing magic ambient */}
             <div className="absolute inset-0 bg-gradient-to-r from-indigo-500/10 to-purple-500/10 blur-xl opacity-0 group-hover:opacity-100 transition-opacity rounded-[2rem]" />
-            <div className="relative w-full flex items-center bg-[#111113]/90 backdrop-blur-3xl border border-white/10 rounded-[2rem] shadow-[0_20px_50px_rgba(0,0,0,0.5)] p-2">
-              <div className="pl-5 pr-1 text-indigo-400/50">
-                <ChevronRight className="w-6 h-6" />
+            <div className="relative w-full flex flex-col bg-[#111113]/90 backdrop-blur-3xl border border-white/10 rounded-[2rem] shadow-[0_20px_50px_rgba(0,0,0,0.5)] p-2">
+              {attachedFiles.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 px-3 pt-1 pb-2">
+                  {attachedFiles.map((f, i) => (
+                    <span key={i} className="flex items-center gap-1 rounded-full bg-indigo-500/15 border border-indigo-400/20 px-2.5 py-1 text-xs text-indigo-200">
+                      📎 {f.name.length > 22 ? f.name.slice(0, 20) + "…" : f.name}
+                      <button type="button" onClick={() => setAttachedFiles((prev) => prev.filter((_, j) => j !== i))} className="text-indigo-300/60 hover:text-white">
+                        <X className="w-3 h-3" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+              <div className="flex items-center">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  accept="image/*,audio/*,video/*,application/pdf,.txt,.csv,.md"
+                  className="hidden"
+                  onChange={(e) => {
+                    const fs = Array.from(e.target.files ?? []);
+                    if (fs.length) setAttachedFiles((prev) => [...prev, ...fs]);
+                    if (fileInputRef.current) fileInputRef.current.value = "";
+                  }}
+                />
+                <button
+                  type="button"
+                  title="Adjuntar (audio, video, PDF, imagen, documento)"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={mmBusy}
+                  className="p-2.5 ml-1 rounded-2xl text-indigo-400/70 hover:text-white hover:bg-indigo-500/20 transition-all disabled:opacity-30"
+                >
+                  <Paperclip className="w-5 h-5" />
+                </button>
+                <button
+                  type="button"
+                  title={isRecording ? "Detener grabación" : "Grabar nota de voz"}
+                  onClick={isRecording ? stopRecording : startRecording}
+                  disabled={mmBusy}
+                  className={`p-2.5 rounded-2xl transition-all disabled:opacity-30 ${isRecording ? "text-red-400 bg-red-500/20 animate-pulse" : "text-indigo-400/70 hover:text-white hover:bg-indigo-500/20"}`}
+                >
+                  <Mic className="w-5 h-5" />
+                </button>
+                <input
+                  ref={inputRef}
+                  type="text"
+                  value={inputValue}
+                  onChange={(e) => setInputValue(e.target.value)}
+                  placeholder={
+                    mmBusy
+                      ? "Analizando el archivo…"
+                      : attachedFiles.length > 0
+                      ? "Preguntá algo sobre el archivo (o enviá vacío)…"
+                      : selectedCardId
+                      ? "Decile al agente qué cambiar en la tarjeta seleccionada..."
+                      : activeNode && !Object.values(nodes).some(n => n.parentId === activeNode.id)
+                      ? "Colaborar en la línea activa..."
+                      : "Crear bifurcación en la línea temporal..."
+                  }
+                  className="w-full bg-transparent border-none text-white text-base px-2 py-4 focus:outline-none focus:ring-0 placeholder:text-gray-500 placeholder:font-light font-medium"
+                  disabled={isLoading || mmBusy}
+                />
+                <button
+                  type="submit"
+                  disabled={(!inputValue.trim() && attachedFiles.length === 0) || isLoading || mmBusy}
+                  className="p-3.5 rounded-2xl bg-indigo-500/20 text-indigo-400 hover:bg-indigo-500 hover:text-white transition-all duration-300 disabled:opacity-30 disabled:bg-transparent disabled:text-gray-600 mr-2"
+                >
+                  <Send className="w-4 h-4" />
+                </button>
               </div>
-              <input
-                ref={inputRef}
-                type="text"
-                value={inputValue}
-                onChange={(e) => setInputValue(e.target.value)}
-                placeholder={
-                  selectedCardId
-                    ? "Decile al agente qué cambiar en la tarjeta seleccionada..."
-                    : activeNode && !Object.values(nodes).some(n => n.parentId === activeNode.id)
-                    ? "Colaborar en la línea activa..."
-                    : "Crear bifurcación en la línea temporal..."
-                }
-                className="w-full bg-transparent border-none text-white text-base px-2 py-4 focus:outline-none focus:ring-0 placeholder:text-gray-500 placeholder:font-light font-medium"
-                disabled={isLoading}
-              />
-              <button
-                type="submit"
-                disabled={!inputValue.trim() || isLoading}
-                className="p-3.5 rounded-2xl bg-indigo-500/20 text-indigo-400 hover:bg-indigo-500 hover:text-white transition-all duration-300 disabled:opacity-30 disabled:bg-transparent disabled:text-gray-600 mr-2"
-              >
-                <Send className="w-4 h-4" />
-              </button>
             </div>
           </form>
         </div>

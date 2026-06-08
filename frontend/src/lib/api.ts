@@ -42,6 +42,18 @@ export async function chat(message: string): Promise<ChatResult> {
   return data;
 }
 
+/** Chat turn WITH attachments (audio/video/PDF/image/docs) — the agent analyses them
+ * natively (Gemini). Used by the sandbox when files are attached. */
+export async function chatMultimodal(message: string, files: File[]): Promise<ChatResult> {
+  const form = new FormData();
+  if (message) form.append("message", message);
+  for (const f of files) form.append("files", f);
+  const res = await request("/api/v1/chat", { method: "POST", body: form });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.detail ?? "No se pudo procesar el archivo");
+  return data;
+}
+
 export interface Me {
   user_id: string;
   tenant_id: string;

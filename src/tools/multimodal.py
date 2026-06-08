@@ -85,6 +85,29 @@ async def _upload_to_files_api(content: bytes, mime: str, filename: str) -> Opti
     return None  # timed out waiting for processing
 
 
+async def analyze_attachments(parts: list, user_message: str = "",
+                              model: str = "gemini-2.5-flash") -> str:
+    """Analyse attached media DIRECTLY with Gemini (the path verified to actually read the
+    file), with a business-aware system prompt. We route multimodal turns here instead of
+    the multi-agent Runner, which drops non-text parts somewhere in its session/router
+    pipeline. ``parts`` already contains the user's text Part + the media Parts."""
+    client = _gemini_client()
+    if client is None:
+        return "No hay un cliente Gemini configurado para analizar el archivo."
+    system = types.Part(text=(
+        "Sos ARIA, el asistente de negocios del usuario (PyME). Analizá el/los archivo(s) "
+        "adjunto(s) — audio, video, documento, imagen — y respondé de forma clara, útil y "
+        "accionable para su negocio. Si el usuario hizo una pregunta, respondéla usando el "
+        "contenido del archivo. Si es un audio/video, resumí lo relevante."
+    ))
+    contents = [system, *parts]
+    try:
+        resp = await asyncio.to_thread(client.models.generate_content, model=model, contents=contents)
+        return (getattr(resp, "text", "") or "").strip() or "No pude extraer una respuesta del archivo."
+    except Exception as e:  # noqa: BLE001
+        return f"No pude analizar el archivo: {e}"
+
+
 async def build_file_part(content: bytes, filename: str, content_type: Optional[str]
                           ) -> tuple[Optional[types.Part], str]:
     """One uploaded file → (Gemini Part | None, human-readable note).
