@@ -256,6 +256,7 @@ async def chat(
     message: str = Form(""),
     session_id: str = Form(""),
     file: UploadFile | None = File(None),
+    files: list[UploadFile] = File(default=[]),
     tenant: TenantContext = Depends(require_active_subscription),
 ):
     start = time.time()
@@ -284,33 +285,26 @@ async def chat(
             raise HTTPException(400, f"Mensaje demasiado largo (máx {MAX_MESSAGE_LENGTH} chars).")
         parts.append(types.Part(text=message.strip()))
 
-    if file:
-        content_bytes = await file.read()
-        if len(content_bytes) > MAX_FILE_SIZE:
-            raise HTTPException(413, "Archivo excede 10MB.")
+    # Files: image / audio / video / PDF / text are analysed NATIVELY by Gemini
+    # (inline, or the Files API when large). Accepts a single `file` or many `files`.
+    from src.tools.multimodal import UPLOAD_MAX, build_file_part
 
-        mime = file.content_type or "application/octet-stream"
-
-        if mime in ALLOWED_IMAGE_TYPES:
-            parts.append(types.Part.from_bytes(data=content_bytes, mime_type=mime))
-            if not message.strip():
-                parts.append(types.Part(text="Analiza esta imagen."))
-        elif mime in ALLOWED_AUDIO_TYPES:
-            # Audio → transcribe then send as text
-            try:
-                from src.tools.audio import transcribe_audio
-                transcript = await transcribe_audio(content_bytes, mime)
-                parts.append(types.Part(text=f"[Transcripción de audio]: {transcript}"))
-            except Exception:
-                parts.append(types.Part(text="[Audio recibido pero no pudo ser transcrito]"))
+    uploads = ([file] if file else []) + [f for f in (files or []) if f]
+    had_media = False
+    for up in uploads:
+        content_bytes = await up.read()
+        if len(content_bytes) > UPLOAD_MAX:
+            raise HTTPException(413, f"'{up.filename}' excede el máximo permitido ({UPLOAD_MAX // 1024 // 1024}MB).")
+        part, note = await build_file_part(content_bytes, up.filename or "", up.content_type)
+        if part is not None:
+            parts.append(part)
+            had_media = True
         else:
-            artifact_url = await save_to_storage(content_bytes, file.filename or "file")
-            parts.append(
-                types.Part(
-                    text=f"[Archivo adjunto]: {file.filename} "
-                    f"({len(content_bytes)} bytes). URL: {artifact_url}"
-                )
-            )
+            parts.append(types.Part(text=note))  # unsupported → labelled note, never silent
+        log_info("chat attachment", agent="chat", tool=note)
+
+    if had_media and not message.strip():
+        parts.append(types.Part(text="Analizá el/los archivo(s) adjunto(s) y dame el contexto relevante para mi negocio."))
 
     if not parts:
         raise HTTPException(400, "Envía un mensaje, imagen o archivo.")
