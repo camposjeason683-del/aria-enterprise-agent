@@ -954,17 +954,24 @@ async def batch_purchase_orders() -> dict:
         if row.get("nombre_original"):
             name_to_prov[row["nombre_original"].lower().strip()] = prov
 
-    # Fetch supplier logistics configs from `pedido_config`
-    config_map = {}
+    # Fetch this tenant's logistics config from `pedido_config`. The table is
+    # per-tenant (PK tenant_id; columns transit_days/coverage_days — see
+    # migrations/0006_audit_remediation.sql), and `client` is already tenant-scoped,
+    # so there is at most one row. Falls back to sane defaults (3-day transit, 7-day
+    # coverage) when the tenant hasn't customized it.
+    transit_days = 3
+    coverage_days = 7
     try:
-        config_res = await client.table("pedido_config").select("name, dias_transito, dias_inventario").execute()
-        for row in (config_res.data or []):
-            name_key = norm_key(row.get("name"))
-            if name_key:
-                config_map[name_key] = row
+        config_res = await client.table("pedido_config").select(
+            "transit_days, coverage_days"
+        ).limit(1).execute()
+        cfg_rows = config_res.data or []
+        if cfg_rows:
+            transit_days = cfg_rows[0].get("transit_days") or transit_days
+            coverage_days = cfg_rows[0].get("coverage_days") or coverage_days
     except Exception as e:
         from src.infra.logger import log_error
-        log_error(f"batch_purchase_orders: failed to fetch config: {e}")
+        log_error(f"batch_purchase_orders: failed to fetch pedido_config: {e}")
 
     # Get velocities
     ref_datetime = dt.combine(target_date, dt.min.time())
@@ -991,13 +998,9 @@ async def batch_purchase_orders() -> dict:
 
         stock_actual = int(item.get("stock_end_of_day") or 0)
 
-        # Get logistics parameters from config
-        prov_norm = norm_key(prov)
-        config = config_map.get(prov_norm) or {}
-        transit_days = config.get("dias_transito") or 3
-        coverage_days = config.get("dias_inventario") or 7
-
         # ── Reorder Point (ROP) ───────────────────────────────────────
+        # transit_days / coverage_days come from this tenant's pedido_config
+        # (fetched once above), shared by every critical SKU in the sweep.
         lead_time_demand = daily * transit_days
         safety_stock = daily * coverage_days
         rop = lead_time_demand + safety_stock

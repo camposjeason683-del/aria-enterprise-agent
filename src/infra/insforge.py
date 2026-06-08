@@ -164,7 +164,17 @@ class _Query:
 
     # ── modifiers ────────────────────────────────────────────────────────────
     def order(self, column: str, desc: bool = False) -> "_Query":
-        self._params.append(("order", f"{column}.{'desc' if desc else 'asc'}"))
+        # PostgREST wants ONE `order=` param with comma-separated clauses
+        # (`order=a.asc,b.desc`). Appending a separate ("order", ...) tuple per call
+        # makes httpx serialize duplicate `order=` params, which PostgREST rejects
+        # with "failed to parse filter (...)". Accumulate into the existing clause so
+        # chained `.order()` mirrors supabase-py (the API this adapter emulates).
+        clause = f"{column}.{'desc' if desc else 'asc'}"
+        for i, (key, val) in enumerate(self._params):
+            if key == "order":
+                self._params[i] = ("order", f"{val},{clause}")
+                return self
+        self._params.append(("order", clause))
         return self
 
     def limit(self, n: int) -> "_Query":
