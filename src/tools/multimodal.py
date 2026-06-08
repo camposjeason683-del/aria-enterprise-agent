@@ -108,6 +108,55 @@ async def analyze_attachments(parts: list, user_message: str = "",
         return f"No pude analizar el archivo: {e}"
 
 
+def _excel_to_text(content: bytes, max_rows: int = 300) -> str:
+    """Flatten an .xlsx/.xls workbook to text (all sheets) so the model can read it."""
+    import pandas as pd
+
+    sheets = pd.read_excel(io.BytesIO(content), sheet_name=None, dtype=str)
+    out = []
+    for name, df in sheets.items():
+        df = df.fillna("")
+        lines = [" | ".join(str(c) for c in df.columns)]
+        for _, row in df.head(max_rows).iterrows():
+            lines.append(" | ".join(str(v) for v in row.values))
+        out.append(f"--- Hoja '{name}' ({len(df)} filas) ---\n" + "\n".join(lines))
+    return "\n\n".join(out)[:200_000]
+
+
+def _pptx_to_text(content: bytes) -> str:
+    """Extract slide text from a .pptx presentation."""
+    from pptx import Presentation
+
+    prs = Presentation(io.BytesIO(content))
+    out = []
+    for i, slide in enumerate(prs.slides, 1):
+        texts = []
+        for shape in slide.shapes:
+            if getattr(shape, "has_text_frame", False):
+                for p in shape.text_frame.paragraphs:
+                    t = "".join(r.text for r in p.runs).strip()
+                    if t:
+                        texts.append(t)
+        if texts:
+            out.append(f"--- Diapositiva {i} ---\n" + "\n".join(texts))
+    return "\n\n".join(out)[:200_000]
+
+
+def _extract_office(content: bytes, mime: str, filename: str) -> Optional[str]:
+    """Excel / PowerPoint → text (Gemini doesn't read those binaries natively). None if N/A."""
+    name = (filename or "").lower()
+    is_xls = "spreadsheet" in mime or "ms-excel" in mime or name.endswith((".xlsx", ".xls"))
+    is_ppt = "presentation" in mime or "powerpoint" in mime or name.endswith((".pptx", ".ppt"))
+    try:
+        if is_xls:
+            return _excel_to_text(content)
+        if is_ppt:
+            return _pptx_to_text(content)
+    except Exception:  # noqa: BLE001 — corrupt/odd office file → fall back to a note
+        return None
+    return None
+
+
 async def build_file_part(content: bytes, filename: str, content_type: Optional[str]
                           ) -> tuple[Optional[types.Part], str]:
     """One uploaded file → (Gemini Part | None, human-readable note).
@@ -136,4 +185,7 @@ async def build_file_part(content: bytes, filename: str, content_type: Optional[
             return None, f"[{name}: el archivo grande no pudo procesarse]"
         return None, f"[{name}: excede el máximo de {UPLOAD_MAX // 1024 // 1024}MB]"
 
+    office = await asyncio.to_thread(_extract_office, content, mime, name)
+    if office:
+        return types.Part(text=f"[Contenido de {name}]:\n{office}"), f"[{name} · Office → texto extraído]"
     return None, f"[Archivo adjunto no analizable directamente: {name} ({mime}, {size} bytes)]"
