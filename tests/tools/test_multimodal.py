@@ -3,7 +3,7 @@ extraction). The actual Gemini upload is exercised in the live smoke."""
 import io
 
 from src.tools.multimodal import (
-    _excel_to_text, _extract_office, _pptx_to_text, classify, resolve_mime,
+    _docx_to_text, _excel_to_text, _extract_office, _pptx_to_text, classify, resolve_mime,
 )
 
 
@@ -57,6 +57,18 @@ def test_pptx_to_text():
     prs.save(buf)
     txt = _pptx_to_text(buf.getvalue())
     assert "12000" in txt
+
+
+def test_docx_to_text():
+    from docx import Document
+
+    doc = Document()
+    doc.add_paragraph("Contrato con proveedor X")
+    doc.add_paragraph("Monto total: 45000 pesos")
+    buf = io.BytesIO()
+    doc.save(buf)
+    txt = _docx_to_text(buf.getvalue())
+    assert "45000" in txt and "proveedor" in txt
 
 
 def test_extract_office_routes_by_mime_and_ext():

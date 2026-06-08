@@ -142,16 +142,34 @@ def _pptx_to_text(content: bytes) -> str:
     return "\n\n".join(out)[:200_000]
 
 
+def _docx_to_text(content: bytes) -> str:
+    """Extract paragraph + table text from a .docx document."""
+    from docx import Document
+
+    doc = Document(io.BytesIO(content))
+    parts = [p.text for p in doc.paragraphs if p.text.strip()]
+    for table in doc.tables:
+        for row in table.rows:
+            cells = [c.text.strip() for c in row.cells if c.text.strip()]
+            if cells:
+                parts.append(" | ".join(cells))
+    return "\n".join(parts)[:200_000]
+
+
 def _extract_office(content: bytes, mime: str, filename: str) -> Optional[str]:
-    """Excel / PowerPoint → text (Gemini doesn't read those binaries natively). None if N/A."""
+    """Excel / PowerPoint / Word → text (Gemini doesn't read those binaries natively).
+    None if not an office file (falls through to the unsupported note)."""
     name = (filename or "").lower()
     is_xls = "spreadsheet" in mime or "ms-excel" in mime or name.endswith((".xlsx", ".xls"))
     is_ppt = "presentation" in mime or "powerpoint" in mime or name.endswith((".pptx", ".ppt"))
+    is_doc = "wordprocessingml" in mime or "msword" in mime or name.endswith((".docx", ".doc"))
     try:
         if is_xls:
             return _excel_to_text(content)
         if is_ppt:
             return _pptx_to_text(content)
+        if is_doc:
+            return _docx_to_text(content)
     except Exception:  # noqa: BLE001 — corrupt/odd office file → fall back to a note
         return None
     return None
