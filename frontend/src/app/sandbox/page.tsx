@@ -1732,7 +1732,7 @@ function SandboxContent() {
                   ref={fileInputRef}
                   type="file"
                   multiple
-                  accept="image/*,audio/*,video/*,application/pdf,.txt,.csv,.md,.xlsx,.xls,.pptx,.ppt"
+                  accept="image/*,audio/*,video/*,application/pdf,.txt,.csv,.md,.xlsx,.xls,.pptx,.ppt,.docx,.doc"
                   className="hidden"
                   onChange={(e) => {
                     const fs = Array.from(e.target.files ?? []);
