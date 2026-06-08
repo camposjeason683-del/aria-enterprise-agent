@@ -132,6 +132,35 @@ async def test_in_filter_and_order():
     assert "order=created_at.desc" in captured["url"]
 
 
+async def test_multiple_order_combines_into_single_param():
+    """Chained .order() must emit ONE `order=col1,col2` param, not two `order=`
+    params — PostgREST rejects duplicates ("failed to parse filter"). Mirrors
+    supabase-py, where successive .order() calls accumulate sort keys."""
+    captured = {}
+
+    def handler(request):
+        captured["url"] = str(request.url)
+        # httpx exposes repeated query keys via .get_list / multi_items
+        captured["orders"] = request.url.params.get_list("order")
+        return httpx.Response(200, json=[])
+
+    await (
+        _client(handler)
+        .table("daily_inventory_ledger")
+        .select("product_name,date")
+        .order("product_name")
+        .order("date")
+        .execute()
+    )
+
+    # Exactly one order param, carrying both clauses in PostgREST syntax.
+    assert captured["orders"] == ["product_name.asc,date.asc"]
+    assert (
+        "order=product_name.asc%2Cdate.asc" in captured["url"]
+        or "order=product_name.asc,date.asc" in captured["url"]
+    )
+
+
 async def test_single_returns_object_not_list():
     def handler(request):
         return httpx.Response(200, json=[{"id": "only"}])
